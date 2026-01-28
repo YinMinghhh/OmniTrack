@@ -99,7 +99,7 @@ class InstanceBackOMNIDETR(nn.Module):
             self.TBD = True
         else:
             self.TBD = False
-        
+
         if self.TBD:
             if self.OCsort:
                 self.instance_handler = TrackHandler(self)
@@ -263,7 +263,7 @@ class InstanceBackOMNIDETR(nn.Module):
         Args:
             preds: list, predicted results
             batch: dict, batch data
-            idx: 
+            idx:
         """
         pred_bboxes, pred_scores = preds
         instance_ids = batch.get("instance_ids", None)
@@ -277,7 +277,7 @@ class InstanceBackOMNIDETR(nn.Module):
         self.timestamp = batch['timestamp'].detach()
         self.gt_groups = batch['gt_groups']
 
-        # maybe generate tracklets 
+        # maybe generate tracklets
         if dn_meta is not None:
             dn_bboxes, dn_scores = dn_info
 
@@ -316,7 +316,7 @@ class InstanceBackOMNIDETR(nn.Module):
                 score_dn_idx_2.append(object_idx)
                 dn_score.append(max_scores)
 
-            
+
             score_dn_idx_1 = torch.cat(score_dn_idx_1, dim=0)
             score_dn_idx_2 = torch.cat(score_dn_idx_2, dim=0)
             dn_score = torch.cat(dn_score, dim=0)
@@ -326,12 +326,12 @@ class InstanceBackOMNIDETR(nn.Module):
             original_idx = torch.arange(gt_idx.size(0))
             inv_gt_idx[gt_idx] = original_idx
 
-            
+
             self.temp_instance_ids = self.temp_instance_ids[inv_gt_idx].detach()
             self.temp_pred_bboxes = self.temp_pred_bboxes[inv_gt_idx].detach()
             self.pred_scores = self.pred_scores[inv_gt_idx].detach()
             self.gt_bboxes = self.gt_bboxes[inv_gt_idx].detach()
-            
+
             mask = self.pred_scores.squeeze(-1) > dn_score
             self.temp_pred_bboxes = torch.where(mask[:, None], self.temp_pred_bboxes, temp_max_query)
             self.pred_scores = torch.where(mask, self.pred_scores.squeeze(-1), dn_score)
@@ -398,11 +398,11 @@ class InstanceBackOMNIDETR(nn.Module):
         cur_timestamp = batch['timestamp']
         inter_time = (cur_timestamp - self.timestamp)
         mask = torch.abs(inter_time) < 0.2   # 0.2s
-        
+
         if self.training: # training mode
             if mask.sum() == 0 or len(batch['gt_groups'])!= len(self.gt_groups):
                 return None, None, atten_mask, dn_meta
-    
+
             # mask temp query if the instance is not in the current batch
             self._mask_temp_query(batch, mask)
 
@@ -422,7 +422,7 @@ class InstanceBackOMNIDETR(nn.Module):
                 temp_bs_instance_ids = temp_bs_instance_ids.to(cur_bs_instance_ids.device)
 
                 cur_indices = []
-                temp_indice = []            
+                temp_indice = []
                 for cur_index,cur_id in enumerate(cur_bs_instance_ids):
                     if cur_id in temp_bs_instance_ids:
                         cur_indices.append(cur_index)
@@ -434,7 +434,18 @@ class InstanceBackOMNIDETR(nn.Module):
 
             max_num_temp_queries = max(num_temp_queries)
 
-            gt_cls = torch.cat([batch['cls'][bs[1]] for bs in temp_indices_map if bs[1].numel() > 0]).detach()
+            # === 修改开始 ===
+            # 先生成列表
+            cls_list = [batch['cls'][bs[1]] for bs in temp_indices_map if bs[1].numel() > 0]
+
+            # 判空处理
+            if len(cls_list) > 0:
+                gt_cls = torch.cat(cls_list).detach()
+            else:
+                # 如果列表为空（无目标），创建一个空的 Tensor，保持设备和类型一致
+                gt_cls = torch.tensor([], dtype=batch['cls'].dtype, device=batch['cls'].device).detach()
+            # === 修改结束 ===
+
             instance_idx = self.temp_instance_ids
             # Each group has positive and negative queries.
             dn_temp_bbox = self.temp_pred_bboxes.repeat(2*temp_groups, 1).detach()
@@ -445,7 +456,7 @@ class InstanceBackOMNIDETR(nn.Module):
             # Positive and negative mask
             # (bs*num*num_group, ), the second total_num*num_group part as negative samples
             neg_idx = torch.arange(max_num_temp_queries * temp_groups, dtype=torch.long, device=dn_temp_bbox.device) + temp_groups * max_num_temp_queries
-            
+
             # TODO  add id noise
             # if id_noise_ratio > 0:
             #     # id noise
@@ -477,7 +488,7 @@ class InstanceBackOMNIDETR(nn.Module):
             padding_cls = torch.zeros(bs, num_dn, dn_cls_embed.shape[-1], device=dn_temp_bbox.device)
             padding_bbox = torch.zeros(bs, num_dn, 4, device=dn_temp_bbox.device)
 
-            
+
             map_indices = torch.cat([torch.tensor(range(num), dtype=torch.long) for num in num_temp_queries])
 
             map_indices = torch.cat([map_indices + max_num_temp_queries * i for i in range(2 * temp_groups)])
@@ -493,14 +504,14 @@ class InstanceBackOMNIDETR(nn.Module):
                 dn_num_query = dn_meta['dn_num_split'][0]
                 attn_mask[:num_dn, num_dn:dn_num_query+num_dn] = True    # MASK temp qurey to see dn query
                 attn_mask[num_dn:, num_dn:] = atten_mask
-            
+
             for i in range(temp_groups):
                 if i == 0:               # first group
                     attn_mask[max_num_temp_queries * i : max_num_temp_queries * (i + 1), max_num_temp_queries * (i + 1) : num_dn] = True
 
                 if i == temp_groups - 1:  # last group
                     attn_mask[max_num_temp_queries * i : max_num_temp_queries * (i + 1), : max_num_temp_queries * i] = True
-                
+
                 else:                     # middle group
                     attn_mask[max_num_temp_queries * i : max_num_temp_queries * (i + 1), max_num_temp_queries * (i + 1) : num_dn] = True
                     attn_mask[max_num_temp_queries * i : max_num_temp_queries * (i + 1), : max_num_temp_queries * i] = True
@@ -539,7 +550,7 @@ class InstanceBackOMNIDETR(nn.Module):
                 attn_mask1.to(class_embed.device),
                 temp_dn_meta,
             )
-        
+
         else: # inference
             if not self.TBD:
                 query = np.array([t.tlwh for t in self.starcks])
@@ -604,7 +615,7 @@ class InstanceBackOMNIDETR(nn.Module):
             tgt_size = num_track + num_queries
             attn_mask = torch.zeros([tgt_size, tgt_size], dtype=torch.bool)
             attn_mask[num_track:, :num_track] = True
-            
+
             return (
                 padding_cls.to(class_embed.device),
                 padding_bbox.to(class_embed.device),
@@ -613,8 +624,8 @@ class InstanceBackOMNIDETR(nn.Module):
             )
 
 
-        
-    
+
+
     def _mask_temp_query(self, batch, vaild_mask):
 
         mask_instance = (self.temp_instance_ids[:, None] == batch['instance_ids']).any(dim=1)
@@ -624,15 +635,15 @@ class InstanceBackOMNIDETR(nn.Module):
         idx_groups = torch.as_tensor([0, *batch['gt_groups'][:-1]]).cumsum_(0)
 
         for i, (gt_num, temp_num) in enumerate(zip(batch['gt_groups'], self.gt_groups)):
-            
-            # instance_id mask 
+
+            # instance_id mask
             cur_bs_instance_ids = batch['instance_ids'][idx_groups[i]:idx_groups[i]+gt_num]
             temp_bs_instance_ids = self.temp_instance_ids[temp_idx_groups[i]:temp_idx_groups[i]+temp_num]
             mask_instance = (temp_bs_instance_ids[:, None] == cur_bs_instance_ids).any(dim=1)
 
             # time mask
             mask[temp_idx_groups[i]:temp_idx_groups[i]+temp_num] = (vaild_mask[i] & mask_instance)
-            
+
         bs = len(self.gt_groups)
         self.temp_instance_ids = self.temp_instance_ids[mask]
         self.temp_pred_bboxes = self.temp_pred_bboxes[mask]
@@ -657,6 +668,6 @@ class InstanceBackOMNIDETR(nn.Module):
 
     def query_handler(self, bbox, score, meta, qt=None):
         return self.instance_handler.query_handler(bbox, score, meta, qt)
-        
+
 
 

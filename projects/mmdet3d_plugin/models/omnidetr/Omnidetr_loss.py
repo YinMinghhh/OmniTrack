@@ -130,7 +130,8 @@ class DETRLoss(nn.Module):
                 loss_cls = self.vfl(pred_scores, gt_scores, one_hot)
             else:
                 loss_cls = self.fl(pred_scores, one_hot.float())
-            loss_cls /= max(num_gts, 1) / nq
+            if nq > 0:
+                loss_cls /= max(num_gts, 1) / nq
         else:
             loss_cls = nn.BCEWithLogitsLoss(reduction="none")(pred_scores, gt_scores).mean(1).sum()  # YOLO CLS loss
 
@@ -420,13 +421,30 @@ class OmniDETRDetectionLoss(DETRLoss):
             total_loss.update(dn_loss)
 
             # Compute the temp loss for denoising
-            if "temp_info" in kwargs and kwargs['temp_info'][0] is not None :
+            temp_loss_calculated = False  # [新增] 标记是否计算了 temp loss
+            if "temp_info" in kwargs and kwargs['temp_info'][0] is not None:
                 temp_bboxes, temp_scores = kwargs["temp_info"]
-                
+
                 match_indices = kwargs["temp_match_indices"]
                 if match_indices is not None:
-                    temp_loss, _ = super().forward(temp_bboxes, temp_scores, batch, postfix="_temp", match_indices=match_indices,)
+                    temp_loss, _ = super().forward(temp_bboxes, temp_scores, batch, postfix="_temp",
+                                                   match_indices=match_indices, )
                     total_loss.update(temp_loss)
+                    temp_loss_calculated = True  # [新增] 标记为 True
+
+            # [新增] 补丁逻辑：如果没计算 temp loss，填充 0.0 以满足 DDP 一致性校验
+            if not temp_loss_calculated:
+                zero_loss = torch.tensor(0.0, device=self.device)
+                # 补齐基础 Loss Key
+                total_loss["loss_class_temp"] = zero_loss
+                total_loss["loss_bbox_temp"] = zero_loss
+                total_loss["loss_giou_temp"] = zero_loss
+
+                # 补齐辅助 Loss Key (Aux Loss)
+                if self.aux_loss:
+                    total_loss["loss_class_aux_temp"] = zero_loss
+                    total_loss["loss_bbox_aux_temp"] = zero_loss
+                    total_loss["loss_giou_aux_temp"] = zero_loss
 
         else:
             # If no denoising metadata is provided, set denoising loss to zero

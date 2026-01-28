@@ -43,9 +43,42 @@ class QueryHandler:
         self.ori_shape = np.array([meta['ori_shape'][1][0].cpu().numpy(), meta['ori_shape'][0][0].cpu().numpy()])
         scale_w = self.ori_shape[0] / self.img_wh[0]
 
+        # === [修复开始] 提取标量时间戳 ===
+        def to_scalar(ts):
+            # 如果是 None，直接返回
+            if ts is None: return None
+            # 如果是 Tensor
+            if hasattr(ts, 'numel'):
+                # 如果元素不止一个 (比如 batch_size=4)，只取第一个
+                if ts.numel() > 1:
+                    ts = ts[0]
+                # 转为 python 标量
+                if hasattr(ts, 'item'):
+                    ts = ts.item()
+            # 如果是 List/Tuple
+            elif isinstance(ts, (list, tuple)):
+                ts = ts[0]
+                # 递归处理里面可能是 Tensor 的情况
+                if hasattr(ts, 'numel') and ts.numel() > 1:
+                    ts = ts[0]
+                if hasattr(ts, 'item'):
+                    ts = ts.item()
+            return ts
 
-        if self.timestamp is None or abs(self.timestamp - meta['timestamp']) >100:
+        curr_ts = to_scalar(meta['timestamp'])
+        prev_ts = to_scalar(self.timestamp)
+
+        # 使用处理后的标量进行比较，解决 RuntimeError
+        if prev_ts is None or abs(prev_ts - curr_ts) > 100:
             self.frame_id = 0
+            # 这里通常意味着新视频序列开始，建议清空 self.timestamp 防止逻辑混乱
+            # self.timestamp = None
+
+        # [重要] 立即更新 self.timestamp 为当前的标量值，供下一帧使用
+        # 这一步必须做，否则 self.timestamp 一直是 None 或者旧 Tensor
+        self.timestamp = curr_ts
+        # === [修复结束] ===
+
         from torchvision.ops import nms
         """ Step 1: initialize tracks"""
         if self.frame_id == 0:

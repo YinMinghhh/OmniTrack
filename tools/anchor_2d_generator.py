@@ -5,6 +5,7 @@ import sys
 import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), '../jrdb_toolkit/detection_eval'))
 from projects.mmdet3d_plugin.core.box2d import *
 
 

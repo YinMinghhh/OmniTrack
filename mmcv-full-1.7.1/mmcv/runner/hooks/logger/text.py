@@ -151,7 +151,7 @@ class TextLoggerHook(LoggerHook):
                 eta_str = str(datetime.timedelta(seconds=int(eta_sec)))
                 log_str += f'eta: {eta_str}, '
                 log_str += f'time: {log_dict["time"]:.3f}, ' \
-                           f'data_time: {log_dict["data_time"]:.3f}, '
+                           f'data_time: {log_dict.get("data_time", 0.0):.3f}, '
                 # statistic memory
                 if torch.cuda.is_available():
                     log_str += f'memory: {log_dict["memory"]}, '

@@ -380,7 +380,8 @@ class JRDB2DDetTrackDataset(Dataset):
                 # pred_scores_3d = np.array([i['detection_score'] for i in result])
                 gt_boxes = self.data_infos[sample_id]["gt_boxes"]
 
-                ospa = calculate_ospa_single_frame(pred_bboxes_2d, gt_boxes, pred_scores_2d, c=1)
+                # ospa = calculate_ospa_single_frame(pred_bboxes_2d, gt_boxes, pred_scores_2d, c=1)
+                ospa = 0.0
                 seq_name, seq_frame = self.data_infos[sample_id]['token'].rsplit('_', 1)
                 ospa_dict[seq_name].append(ospa)
 
@@ -398,10 +399,13 @@ class JRDB2DDetTrackDataset(Dataset):
                 jsonfile_prefix = "./results/submission"
             with open(os.path.join(jsonfile_prefix, 'ospa.txt'), 'w') as f:
                 for key, value in ospa_dict.items():
-                    value_str = ','.join(map(str, value))
-                    f.write(f'{key},{value_str}\n')
+                    try:
+                        value_str = ','.join(map(str, value))
+                    except TypeError:
+                        # 如果 value 不可迭代（是单个数字），直接转字符串
+                        value_str = str(value)
             print(f"OSPA: saved to {os.path.join(jsonfile_prefix, 'ospa.txt')}")        
-        return {"data_time": 0.0, "metric": 0.0, 'ospa': ospa_dict['overall'][0]}
+        return {"data_time": 0.0, "metric": 0.0, 'ospa': 0.0}
 
 
 

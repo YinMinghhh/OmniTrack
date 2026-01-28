@@ -61,9 +61,19 @@ class NuScenesSparse4DAdaptor(object):
         pass
 
     def __call__(self, input_dict):
-        input_dict["projection_mat"] = np.float32(
-            np.stack(input_dict["lidar2img"])
-        )
+        # [修复] 检查 aug_mat 是否存在
+        if "aug_mat" in input_dict:
+            input_dict["projection_mat"] = np.float32(
+                np.stack(input_dict["aug_mat"])
+            )
+        else:
+            # 如果没有 aug_mat (如验证阶段)，使用 4x4 单位矩阵代替
+            # 假设 num_views 对应 img 列表的长度
+            num_views = len(input_dict["img"])
+            input_dict["projection_mat"] = np.float32(
+                np.eye(4)[None].repeat(num_views, axis=0)
+            )
+
         input_dict["image_wh"] = np.ascontiguousarray(
             np.array(input_dict["img_shape"], dtype=np.float32)[:, :2][:, ::-1]
         )
@@ -345,12 +355,25 @@ class JRDBSparse2DAdaptor(object):
         pass
 
     def __call__(self, input_dict):
+        # [修复] 这里也需要增加 aug_mat 的判空逻辑
+        if "aug_mat" in input_dict:
+            input_dict["projection_mat"] = np.float32(
+                np.stack(input_dict["aug_mat"])
+            )
+        else:
+            # 验证阶段没有 aug_mat，使用单位矩阵填充
+            num_views = len(input_dict["img"])
+            input_dict["projection_mat"] = np.float32(
+                np.eye(4)[None].repeat(num_views, axis=0)
+            )
 
-        input_dict["projection_mat"] = np.float32(
-            np.stack(input_dict["aug_mat"])
-        )
+        # [修复] 解决验证集 img_shape 是一维数组导致的 IndexError
+        img_shapes = np.array(input_dict["img_shape"], dtype=np.float32)
+        if img_shapes.ndim == 1:
+            img_shapes = img_shapes[None, :]  # 升维: (3,) -> (1, 3)
+
         input_dict["image_wh"] = np.ascontiguousarray(
-            np.array(input_dict["img_shape"], dtype=np.float32)[:, :2][:, ::-1]
+            img_shapes[:, :2][:, ::-1]
         )
         if "cam_intrinsic" in input_dict:
             input_dict["cam_intrinsic"] = np.float32(

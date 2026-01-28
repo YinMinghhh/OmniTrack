@@ -156,8 +156,9 @@ class MMDistributedDataParallel(DistributedDataParallel):
         Returns:
             Any: Forward result of :attr:`module`.
         """
+        use_replicated = getattr(self, '_use_replicated_tensor_module', False)
         module_to_run = self._replicated_tensor_module if \
-            self._use_replicated_tensor_module else self.module
+            use_replicated else self.module
 
         if self.device_ids:
             inputs, kwargs = self.to_kwargs(  # type: ignore
