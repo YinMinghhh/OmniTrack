@@ -1,6 +1,8 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from __future__ import division
 import sys
+sys.path.append('/mnt/sdb/ym/OmniTrack/')
+
 import os
 
 print(sys.executable, os.path.abspath(__file__))
@@ -320,6 +322,7 @@ def main():
 
 
 if __name__ == "__main__":
+
     torch.multiprocessing.set_start_method(
         "fork"
     )  # use fork workers_per_gpu can be > 1

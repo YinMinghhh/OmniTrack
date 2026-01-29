@@ -1,6 +1,8 @@
 import random
 import math
+import sys
 import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../../jrdb_toolkit/detection_eval'))
 import time
 import os.path as osp
 import cv2
