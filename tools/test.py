@@ -2,6 +2,8 @@
 import argparse
 import mmcv
 import os
+import sys
+sys.path.append('/mnt/sdb/ym/OmniTrack/')
 import torch
 import warnings
 from mmcv import Config, DictAction
