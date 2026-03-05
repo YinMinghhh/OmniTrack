@@ -7,13 +7,14 @@ This note documents what the current scripts and evaluator actually do, and wher
 Files covered:
 
 - `scripts/train_jrdb2019_4g_bs2.sh`
-- `scripts/eval_jrdb2019.sh`
 - `scripts/run_eval.sh`
 - `tools/convert_pred_json2kitti.py`
-- `tools/convert_json2kitti_2d.py`
 - `tools/prepare_eval_env.py`
+- `tools/eval_sanity_check.py`
 - `jrdb_toolkit/tracking_eval/TrackEval/scripts/run_jrdb.py`
 - `jrdb_toolkit/tracking_eval/TrackEval/trackeval/datasets/jrdb_2d_box.py`
+
+Note: `scripts/eval_jrdb2019.sh` and some helper scripts may exist locally as untracked files, but are not part of the committed baseline contract.
 
 ## 2. End-to-End Contract (What "evaluation pipeline" means)
 
@@ -64,19 +65,15 @@ Impact on eval:
 
 Role:
 
-- Run inference.
-- Convert JSON predictions with `tools/convert_json2kitti_2d.py`.
-- Call TrackEval.
+- Deprecated local script (not part of committed baseline if untracked).
 
 Observed issues:
 
-- No call to `tools/prepare_eval_env.py` (GT/seqmap prep is assumed pre-existing).
-- Does not pass `--TRACKER_SUB_FOLDER ""`, so dataset default `TRACKER_SUB_FOLDER='data'` is used.
-- Converter writes to `evaluation_workspace/pred/JRDB-train/<seq>.txt`, but default parser expects `.../JRDB-train/data/<seq>.txt`.
+- Can diverge from canonical path and should not be used for baseline reporting.
 
 Conclusion:
 
-- As written, this script is structurally fragile and likely inconsistent with current output layout.
+- Keep only for local history/debug context.
 
 ### 4.3 `scripts/run_eval.sh`
 
@@ -84,16 +81,17 @@ Role:
 
 - Run inference.
 - Convert JSON predictions with `tools/convert_pred_json2kitti.py`.
+- Prepare GT/seqmap workspace with `tools/prepare_eval_env.py`.
+- Run sanity checks with `tools/eval_sanity_check.py` after inference and after workspace prep.
 - Run TrackEval with `--TRACKER_SUB_FOLDER ""`.
 
 Observed issues:
 
-- Step 3 is announced (`Environment Setup`) but `prepare_eval_env.py` is currently commented out.
-- This means GT/seqmap/padding may be stale from older runs.
+- None at orchestration level after Phase-2 cleanup (single canonical entrypoint).
 
 Conclusion:
 
-- Better aligned than `eval_jrdb2019.sh` on tracker folder mapping, but still depends on external stale state unless Step 3 is executed.
+- This is the only baseline evaluation entrypoint.
 
 ## 5. Converter + evaluator semantic contract
 
@@ -101,14 +99,17 @@ TrackEval JRDB2D parser loads columns 6:10 as box coordinates and computes simil
 
 - `_calculate_box_ious(..., box_format='xywh')`
 
-Current converters write:
+Current canonical pipeline (`scripts/run_eval.sh`) now writes:
 
-- `left, top, right, bottom` (x1, y1, x2, y2)
+- `left, top, width, height` (`xywh`)
+- Explicitly pinned via `--box_format xywh` for:
+  - `tools/convert_pred_json2kitti.py`
+  - `tools/prepare_eval_env.py`
 
-This is a high-risk semantic mismatch:
+Note:
 
-- Evaluator expects `(x, y, w, h)` but input appears `(x1, y1, x2, y2)`.
-- This can severely distort IoU and produce abnormal HOTA behavior.
+- Both scripts still provide `--box_format {xywh,xyxy}` for controlled experiments/debugging.
+- If `xyxy` is used while evaluator remains `xywh`, IoU can be severely distorted.
 
 ## 6. Other evaluator changes that affect comparability
 
@@ -127,9 +128,7 @@ Effect:
 
 ### P0 (must resolve before trusting any score)
 
-1. Box format mismatch risk (xywh vs x1y1x2y2).
-2. `run_eval.sh` step-3 prep currently not executed (commented).
-3. `eval_jrdb2019.sh` tracker subfolder mismatch with produced prediction layout.
+1. Evaluator has local behavior changes versus default TrackEval preprocessing.
 
 ### P1 (resolve for reproducibility and fairness)
 
@@ -139,15 +138,15 @@ Effect:
 
 ### P2 (quality and maintainability)
 
-1. Two eval scripts with overlapping logic increase confusion and drift.
-2. Duplicate converters make it hard to know which contract is authoritative.
+1. Local untracked legacy scripts can still cause confusion if accidentally executed.
+2. Box format can still be changed by flag; baseline reports should record the flag value.
 
 ## 8. Minimal "Trust Gate" before using as baseline
 
 Before any model improvement work, confirm:
 
 1. A single canonical eval entrypoint is selected.
-2. Step-3 environment prep is deterministic and always executed.
+2. Environment prep is deterministic and always executed.
 3. Converter box semantics are explicitly documented and match evaluator expectation.
 4. Pred/GT sequence sets and frame coverage are explicitly checked each run.
 5. Evaluator modifications are documented as "official" vs "local patched".

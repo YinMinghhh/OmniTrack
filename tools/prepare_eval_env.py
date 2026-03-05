@@ -7,10 +7,16 @@ GT_SOURCE_DIR = "data/JRDB2019/train_dataset_with_activity/labels/labels_2d_stit
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--workspace', required=True)
+    parser.add_argument(
+        '--box_format',
+        default='xywh',
+        choices=['xywh', 'xyxy'],
+        help='BBox format written to columns 6:10 in GT txt.',
+    )
     return parser.parse_args()
 
 
-def convert_gt(workspace_gt):
+def convert_gt(workspace_gt, box_format):
     print("[1/3] Converting GT...")
     out_dir = os.path.join(workspace_gt, "label_02")  # 强制使用 label_02
     if not os.path.exists(out_dir): os.makedirs(out_dir)
@@ -29,8 +35,14 @@ def convert_gt(workspace_gt):
                 except:
                     tid = abs(hash(obj['label_id'])) % 100000
                 b = obj['box']
+                left, top = float(b[0]), float(b[1])
+                width, height = float(b[2]), float(b[3])
+                if box_format == 'xywh':
+                    x3, x4 = width, height
+                else:
+                    x3, x4 = left + width, top + height
                 lines.append(
-                    f"{fid} {tid} Pedestrian 0 0 0 {b[0]} {b[1]} {b[0] + b[2]} {b[1] + b[3]} -1 -1 -1 -1000 -1000 -1000 0 1.0\n")
+                    f"{fid} {tid} Pedestrian 0 0 0 {left:.2f} {top:.2f} {x3:.2f} {x4:.2f} -1 -1 -1 -1000 -1000 -1000 0 1.0\n")
 
         lines.sort(key=lambda x: int(x.split(' ')[0]))
         with open(os.path.join(out_dir, f"{seq}.txt"), 'w') as f:
@@ -71,7 +83,8 @@ def main():
     gt_ws = os.path.join(args.workspace, "gt")
     pred_ws = os.path.join(args.workspace, "pred/JRDB-train")
 
-    convert_gt(gt_ws)
+    print(f"[INFO] Writing GT boxes as: {args.box_format}")
+    convert_gt(gt_ws, args.box_format)
     generate_seqmap(gt_ws)
     fill_missing(pred_ws, gt_ws)
     print("[SUCCESS] Evaluation environment ready.")

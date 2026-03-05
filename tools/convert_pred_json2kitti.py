@@ -7,6 +7,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Convert OmniTrack JSON to KITTI txt')
     parser.add_argument('--pred_json', required=True, help='Path to results_jrdb2d.json')
     parser.add_argument('--output_dir', required=True, help='Directory to save KITTI txt files')
+    parser.add_argument(
+        '--box_format',
+        default='xywh',
+        choices=['xywh', 'xyxy'],
+        help='Output bbox format written to columns 6:10.',
+    )
     return parser.parse_args()
 
 
@@ -15,6 +21,7 @@ def main():
     if not os.path.exists(args.output_dir): os.makedirs(args.output_dir)
 
     print(f"[INFO] Loading {args.pred_json}...")
+    print(f"[INFO] Writing boxes as: {args.box_format}")
     with open(args.pred_json, 'r') as f:
         data = json.load(f)
 
@@ -63,8 +70,18 @@ def main():
         score = float(obj.get('detection_score', -1))
         if math.isnan(score): score = -1.0
 
-        # KITTI Line
-        line = f"{frame_idx} {tid} Pedestrian 0 0 0 {x1y1[0]:.2f} {x1y1[1]:.2f} {x1y1[0] + size[0]:.2f} {x1y1[1] + size[1]:.2f} -1 -1 -1 -1000 -1000 -1000 0 {score:.4f}\n"
+        left, top = float(x1y1[0]), float(x1y1[1])
+        width, height = float(size[0]), float(size[1])
+        if args.box_format == 'xywh':
+            x3, x4 = width, height
+        else:
+            x3, x4 = left + width, top + height
+
+        line = (
+            f"{frame_idx} {tid} Pedestrian 0 0 0 "
+            f"{left:.2f} {top:.2f} {x3:.2f} {x4:.2f} "
+            f"-1 -1 -1 -1000 -1000 -1000 0 {score:.4f}\n"
+        )
         seq_outputs[seq_name].append(line)
 
     for seq, lines in seq_outputs.items():
