@@ -292,15 +292,70 @@ class JRDB2DDetTrackDataset(Dataset):
     def _format_bbox(self, results, jsonfile_prefix=None, tracking=False):
         jrdb_annos = {}
         mapped_class_names = self.CLASSES
+        seq_stats = defaultdict(
+            lambda: {
+                "frames": 0,
+                "qh_tracks": 0,
+                "qh_dets": 0,
+                "instance_ids_total": 0,
+                "instance_ids_none": 0,
+                "tracking_total": 0,
+                "tracking_none": 0,
+                "written": 0,
+            }
+        )
 
         print("Start to convert detection format...")
         for sample_id, det in enumerate(mmcv.track_iter_progress(results)):
             annos = []
-            boxes = output_to_jrdb_box(det)
             sample_token = self.data_infos[sample_id]["token"]
+            seq_name = sample_token.rsplit("_", 1)[0]
+            stat = seq_stats[seq_name]
+            stat["frames"] += 1
+
+            boxes = output_to_jrdb_box(det)
+
+            det_boxes = det.get("det_boxes_2d", [])
+            qh_tracks = int(det.get("query_handler_tracks", len(det.get("boxes_2d", []))))
+            qh_dets = int(det.get("query_handler_dets", 0 if det_boxes is None else len(det_boxes)))
+            qh_ids_none = int(det.get("query_handler_ids_none", 0))
+            stat["qh_tracks"] += qh_tracks
+            stat["qh_dets"] += qh_dets
+
+            raw_ids = det.get("instance_ids", [])
+            if isinstance(raw_ids, torch.Tensor):
+                ids = raw_ids.detach().cpu().tolist()
+            elif isinstance(raw_ids, np.ndarray):
+                ids = raw_ids.tolist()
+            elif isinstance(raw_ids, list):
+                ids = raw_ids
+            elif raw_ids is None:
+                ids = []
+            else:
+                try:
+                    ids = list(raw_ids)
+                except TypeError:
+                    ids = [raw_ids]
+
+            stat["instance_ids_total"] += len(ids)
+            if qh_ids_none > 0:
+                stat["instance_ids_none"] += qh_ids_none
+            else:
+                stat["instance_ids_none"] += sum(
+                    1 for tid in ids if tid is None or str(tid) == "None"
+                )
 
             # need to convert to KITTI format
             for i, box in enumerate(boxes):
+                tid = box.token
+                tid_str = str(tid)
+                tid_is_none = tid is None or tid_str == "None" or tid_str.lower() == "nan"
+                stat["tracking_total"] += 1
+                if tid_is_none:
+                    stat["tracking_none"] += 1
+                    if self.tracking:
+                        continue
+
                 name = mapped_class_names[box.label]
                 jrdb_anno = dict(
                     sample_token=sample_token,
@@ -309,11 +364,29 @@ class JRDB2DDetTrackDataset(Dataset):
                     detection_name=name,
                     detection_score=box.score,
                     cls_score=box.cls_score,
-                    tracking_id=str(box.token),
+                    tracking_id=tid_str,
                 )
-                
                 annos.append(jrdb_anno)
+                stat["written"] += 1
             jrdb_annos[sample_token] = annos
+
+        for seq_name in sorted(seq_stats.keys()):
+            s = seq_stats[seq_name]
+            none_ratio = 0.0 if s["tracking_total"] == 0 else (100.0 * s["tracking_none"] / s["tracking_total"])
+            print(
+                "[IDCHAIN][FORMAT][SEQ] "
+                f"{seq_name} "
+                f"frames={s['frames']} "
+                f"qh_tracks={s['qh_tracks']} "
+                f"qh_dets={s['qh_dets']} "
+                f"instance_ids={s['instance_ids_total']} "
+                f"instance_ids_none={s['instance_ids_none']} "
+                f"tracking_total={s['tracking_total']} "
+                f"tracking_none={s['tracking_none']} "
+                f"tracking_none_ratio={none_ratio:.2f}% "
+                f"written={s['written']}"
+            )
+
         nusc_submissions = {"results": jrdb_annos}
 
         mmcv.mkdir_or_exist(jsonfile_prefix)

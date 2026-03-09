@@ -57,8 +57,17 @@ def check_pred_json(pred_json_path, errors, warnings):
     obj_count = 0
     invalid_token_count = 0
     none_id_count = 0
+    seq_stats = defaultdict(
+        lambda: {
+            "frames": 0,
+            "objects": 0,
+            "none_id": 0,
+        }
+    )
 
     for token, objs in frames.items():
+        seq_name = token.rsplit("_", 1)[0] if "_" in token else "__invalid__"
+        seq_stats[seq_name]["frames"] += 1
         if "_" not in token:
             invalid_token_count += 1
         else:
@@ -70,12 +79,25 @@ def check_pred_json(pred_json_path, errors, warnings):
             warnings.append(f"Frame {token} has non-list predictions.")
             continue
         obj_count += len(objs)
+        seq_stats[seq_name]["objects"] += len(objs)
         for obj in objs:
             tid = obj.get("tracking_id", None)
             if tid is None or tid == "None":
                 none_id_count += 1
+                seq_stats[seq_name]["none_id"] += 1
 
     print(f"[SANITY] JSON frames={frame_count}, objects={obj_count}, none_id={none_id_count}")
+    for seq_name in sorted(seq_stats.keys()):
+        s = seq_stats[seq_name]
+        none_ratio = 0.0 if s["objects"] == 0 else (100.0 * s["none_id"] / s["objects"])
+        print(
+            "[IDCHAIN][SANITY][SEQ] "
+            f"{seq_name} "
+            f"frames={s['frames']} "
+            f"objects={s['objects']} "
+            f"none_id={s['none_id']} "
+            f"none_ratio={none_ratio:.2f}%"
+        )
     if frame_count == 0:
         errors.append("Prediction JSON has zero frames in 'results'.")
     if obj_count == 0:
