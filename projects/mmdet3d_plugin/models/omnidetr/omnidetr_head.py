@@ -1,4 +1,3 @@
-
 from mmdet.models import HEADS
 from mmdet.core.bbox.builder import BBOX_SAMPLERS
 from mmcv.cnn.bricks.registry import (PLUGIN_LAYERS,)
@@ -444,6 +443,9 @@ class OmniETRDecoder(nn.Module):
                 "quality": online_qt,
                 "det_boxes_2d": det_tlwhs, 
                 "det_scores_2d": det_scores, 
+                "query_handler_tracks": len(online_targets),
+                "query_handler_dets": len(dets) if dets is not None else 0,
+                "query_handler_ids_none": sum([1 for tid in online_ids if tid is None]),
                 }
             )
 

@@ -1,6 +1,10 @@
-import json, os, argparse, math
-from tqdm import tqdm
+import argparse
+import json
+import math
+import os
 from collections import defaultdict
+
+from tqdm import tqdm
 
 
 def parse_args():
@@ -18,57 +22,76 @@ def parse_args():
 
 def main():
     args = parse_args()
-    if not os.path.exists(args.output_dir): os.makedirs(args.output_dir)
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
 
     print(f"[INFO] Loading {args.pred_json}...")
     print(f"[INFO] Writing boxes as: {args.box_format}")
     with open(args.pred_json, 'r') as f:
         data = json.load(f)
 
-    # 智能解包逻辑
     if isinstance(data, dict) and 'results' in data:
         content = data['results']
     elif isinstance(data, list):
         content = data
     else:
-        content = data  # 假设是字典直接包含数据
+        content = data
 
-    # 扁平化数据
     flat_list = []
     if isinstance(content, dict):
-        for k, v in content.items():
-            for obj in v:
-                if 'sample_token' not in obj: obj['sample_token'] = k
+        for sample_token, objs in content.items():
+            for obj in objs:
+                if 'sample_token' not in obj:
+                    obj['sample_token'] = sample_token
                 flat_list.append(obj)
     elif isinstance(content, list):
         flat_list = content
 
     seq_outputs = defaultdict(list)
-    for obj in tqdm(flat_list, desc="Converting"):
+    seq_stats = defaultdict(
+        lambda: {
+            'input_objs': 0,
+            'drop_none_tid': 0,
+            'drop_bad_tid': 0,
+            'drop_bad_box': 0,
+            'written_objs': 0,
+        }
+    )
+
+    for obj in tqdm(flat_list, desc='Converting'):
         token = obj.get('sample_token', '')
         last_us = token.rfind('_')
-        if last_us == -1: continue
+        if last_us == -1:
+            continue
 
         seq_name = token[:last_us]
+        stat = seq_stats[seq_name]
+        stat['input_objs'] += 1
+
         try:
             frame_idx = int(token[last_us + 1:])
-        except:
+        except Exception:
             continue
 
-        # 过滤无效ID
         tid = obj.get('tracking_id', 'None')
-        if tid == 'None' or tid is None: continue
+        if tid == 'None' or tid is None:
+            stat['drop_none_tid'] += 1
+            continue
+
         try:
             tid = int(float(tid))
-        except:
+        except Exception:
+            stat['drop_bad_tid'] += 1
             continue
 
-        # 坐标提取
         x1y1, size = obj.get('x1y1', []), obj.get('size', [])
-        if len(x1y1) < 2 or len(size) < 2: continue
+        if len(x1y1) < 2 or len(size) < 2:
+            stat['drop_bad_box'] += 1
+            continue
 
         score = float(obj.get('detection_score', -1))
-        if math.isnan(score): score = -1.0
+        if math.isnan(score):
+            score = -1.0
 
         left, top = float(x1y1[0]), float(x1y1[1])
         width, height = float(size[0]), float(size[1])
@@ -83,12 +106,26 @@ def main():
             f"-1 -1 -1 -1000 -1000 -1000 0 {score:.4f}\n"
         )
         seq_outputs[seq_name].append(line)
+        stat['written_objs'] += 1
 
-    for seq, lines in seq_outputs.items():
+    for seq_name, lines in seq_outputs.items():
         lines.sort(key=lambda x: int(x.split(' ')[0]))
-        with open(os.path.join(args.output_dir, f"{seq}.txt"), 'w') as f:
+        with open(os.path.join(args.output_dir, f"{seq_name}.txt"), 'w') as f:
             f.writelines(lines)
+
     print(f"[SUCCESS] Converted {len(seq_outputs)} sequences to {args.output_dir}")
+    for seq_name in sorted(seq_stats.keys()):
+        s = seq_stats[seq_name]
+        print(
+            '[IDCHAIN][CONVERT][SEQ] '
+            f"{seq_name} "
+            f"input={s['input_objs']} "
+            f"drop_none_tid={s['drop_none_tid']} "
+            f"drop_bad_tid={s['drop_bad_tid']} "
+            f"drop_bad_box={s['drop_bad_box']} "
+            f"written={s['written_objs']}"
+        )
 
 
-if __name__ == '__main__': main()
+if __name__ == '__main__':
+    main()
