@@ -6,7 +6,7 @@ PYTHON_BIN=${PYTHON_BIN:-python}
 
 GPU_ID=${GPU_ID:-1}
 CONFIG=${CONFIG:-projects/configs/JRDB_OmniTrack.py}
-CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_47565.pth}
+CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_135900.pth}
 PKL_OUT=${PKL_OUT:-work_dirs/jrdb2019_4g_bs2/results.pkl}
 JSON_OUT=${JSON_OUT:-results/submission/results_jrdb2d.json}
 WORKSPACE=${WORKSPACE:-"$ROOT_DIR/evaluation_workspace"}

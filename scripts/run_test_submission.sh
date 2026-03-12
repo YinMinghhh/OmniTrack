@@ -6,7 +6,7 @@ PYTHON_BIN=${PYTHON_BIN:-python}
 
 GPU_ID=${GPU_ID:-1}
 CONFIG=${CONFIG:-projects/configs/JRDB_OmniTrack.py}
-CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_47565.pth}
+CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_135900.pth}
 INFER_SPLIT=${INFER_SPLIT:-test}
 ANN_ROOT=data/JRDB2019_2d_stitched_anno_pkls
 TEST_ANN_FILE=${TEST_ANN_FILE:-$ANN_ROOT/JRDB_infos_test_v1.2.pkl}
