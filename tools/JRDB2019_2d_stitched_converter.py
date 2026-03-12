@@ -12,17 +12,13 @@ from tqdm import tqdm
 from collections import defaultdict
 from pycocotools import mask
 
+try:
+    from tools.jrdb_eval_splits import get_validation_sequences
+except ImportError:
+    from jrdb_eval_splits import get_validation_sequences
 
-# use for validation
-validation = [
-    "clark-center-2019-02-28_1",
-    "gates-ai-lab-2019-02-08_0",
-    "huang-2-2019-01-25_0",
-    "meyer-green-2019-03-16_0",
-    "nvidia-aud-2019-04-18_0",
-    "tressider-2019-03-16_1",
-    "tressider-2019-04-26_2"
-]
+
+validation = set(get_validation_sequences())
 
 # file 
 FILE = ['calibration','images', 'labels', 'pointclouds', 'timestamps']
