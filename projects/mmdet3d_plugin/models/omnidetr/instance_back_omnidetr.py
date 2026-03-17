@@ -16,6 +16,14 @@ from .track_handler_module import TrackHandler
 
 __all__ = ["InstanceBackOMNIDETR"]
 
+
+def _merge_cfg(default_cfg, override_cfg=None):
+    cfg = dict(default_cfg)
+    if override_cfg is None:
+        return cfg
+    cfg.update(dict(override_cfg))
+    return cfg
+
 def topk(confidence, k, *inputs):
     bs, N = confidence.shape[:2]
     confidence, indices = torch.topk(confidence, k, dim=1)
@@ -47,6 +55,11 @@ class InstanceBackOMNIDETR(nn.Module):
         nms_thresh = 0.05,      # nms threshold for track
         init_thresh = 0.55,  # init a track when the score is greater than init_thresh
         extend = False,
+        tracking_mode="e2e",
+        tbd_backend="hybridsort",
+        e2e_handler_cfg=None,
+        tbd_handler_cfg=None,
+        tbd_tracker_cfg=None,
     ):
         super(InstanceBackOMNIDETR, self).__init__()
         self.embed_dims = embed_dims
@@ -85,28 +98,68 @@ class InstanceBackOMNIDETR(nn.Module):
         self.max_time_lost = 10
         self.extend = extend
 
-        self.nms_thresh = nms_thresh
-        self.track_thresh = track_thresh
-        self.det_thresh = det_thresh
-        self.init_thresh = init_thresh
-
         # tracking variables
         self.lost_stracks = []
-        self.OCsort = False
-        self.Hybridsort = False
-        self.ByteTrack = False
-        if self.OCsort or self.Hybridsort or self.ByteTrack:
-            self.TBD = True
-        else:
-            self.TBD = False
+        self.e2e_handler_cfg = _merge_cfg(
+            {
+                "nms_thresh": 0.05,
+                "det_thresh": 0.10,
+                "track_thresh": 0.39,
+                "init_thresh": 0.315,
+                "max_time_lost": 10,
+            },
+            e2e_handler_cfg,
+        )
+        self.tbd_handler_cfg = _merge_cfg(
+            {
+                "det_thresh": 0.10,
+                "nms_iou": 0.35,
+                "reset_time_gap": 100,
+            },
+            tbd_handler_cfg,
+        )
+        self.tbd_tracker_cfg = dict(tbd_tracker_cfg or {})
+
+        # Keep legacy scalar args as compatibility fallbacks for external configs.
+        self.nms_thresh = self.e2e_handler_cfg["nms_thresh"]
+        self.track_thresh = self.e2e_handler_cfg["track_thresh"]
+        self.det_thresh = self.e2e_handler_cfg["det_thresh"]
+        self.init_thresh = self.e2e_handler_cfg["init_thresh"]
+        self.max_time_lost = self.e2e_handler_cfg["max_time_lost"]
+        self.legacy_track_thresh = track_thresh
+        self.legacy_det_thresh = det_thresh
+        self.legacy_nms_thresh = nms_thresh
+        self.legacy_init_thresh = init_thresh
+
+        if not isinstance(tracking_mode, str):
+            raise TypeError("tracking_mode must be a string.")
+        if not isinstance(tbd_backend, str):
+            raise TypeError("tbd_backend must be a string.")
+
+        self.tracking_mode = tracking_mode.lower()
+        self.tbd_backend = tbd_backend.lower()
+
+        if self.tracking_mode not in {"e2e", "tbd"}:
+            raise ValueError(
+                f"Unsupported tracking_mode={tracking_mode!r}. "
+                "Expected 'e2e' or 'tbd'."
+            )
+
+        self.TBD = self.tracking_mode == "tbd"
+        self.OCsort = self.TBD and self.tbd_backend == "ocsort"
+        self.Hybridsort = self.TBD and self.tbd_backend == "hybridsort"
+        self.ByteTrack = self.TBD and self.tbd_backend == "bytetrack"
+
+        if self.TBD and not self.Hybridsort:
+            raise NotImplementedError(
+                f"TBD backend '{self.tbd_backend}' is not wired for JRDB v1. "
+                "Only 'hybridsort' is supported right now."
+            )
 
         if self.TBD:
-            if self.OCsort:
-                self.instance_handler = TrackHandler(self)
-            else:
-                self.instance_handler = TrackHandler(self)
+            self.instance_handler = TrackHandler(self)
         else:
-                self.instance_handler = QueryHandler(self)
+            self.instance_handler = QueryHandler(self)
 
 
     def init_weight(self):
@@ -668,6 +721,5 @@ class InstanceBackOMNIDETR(nn.Module):
 
     def query_handler(self, bbox, score, meta, qt=None):
         return self.instance_handler.query_handler(bbox, score, meta, qt)
-
 
 

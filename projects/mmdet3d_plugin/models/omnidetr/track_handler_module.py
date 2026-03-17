@@ -1,19 +1,13 @@
-# query_handler_module.py
-import argparse
-import torch
-import pickle
-from torch import nn
+# track_handler_module.py
+import copy
+
 import numpy as np
-from .ops import xywh2xyxy,xyxy2xywh
-from ..track.strack import STrack
-from ..track.kalman_filter import KalmanFilter
-from ..track.matching import iou_distance, iou_score
-from ..trackers.ocsort_tracker.ocsort import OCSort
-from ..trackers.hybrid_sort_tracker.hybrid_sort import Hybrid_Sort
-from ..trackers.sort_tracker.sort import Sort
-from ..trackers.byte_tracker.byte_tracker import BYTETracker
-from ..trackers.args import make_parser
+import torch
 from torchvision.ops import nms
+
+from ..track.strack import STrack
+from ..trackers.args import make_parser
+from ..trackers.hybrid_sort_tracker.hybrid_sort import Hybrid_Sort
 
 
 
@@ -24,80 +18,102 @@ class TrackState(object):
     Removed = 3
 
 
+def _timestamp_to_scalar(ts):
+    if ts is None:
+        return None
+    if hasattr(ts, "numel"):
+        if ts.numel() > 1:
+            ts = ts[0]
+        if hasattr(ts, "item"):
+            ts = ts.item()
+        return ts
+    if isinstance(ts, (list, tuple)):
+        if len(ts) == 0:
+            return None
+        return _timestamp_to_scalar(ts[0])
+    return ts
+
+
 class TrackHandler:
     def __init__(self, instance_bank):
         self.instance_bank = instance_bank
-        self.instance_bank.nms_thresh = 0.05
-        self.instance_bank.track_thresh = 0.45
-        self.instance_bank.det_thresh = 0.10
-        self.instance_bank.init_thresh = 0.55
+        self.tbd_backend = getattr(instance_bank, "tbd_backend", "hybridsort")
+        if self.tbd_backend != "hybridsort":
+            raise NotImplementedError(
+                f"Unsupported TBD backend {self.tbd_backend!r}. "
+                "Only 'hybridsort' is supported."
+            )
 
-        # self.tracker = OCSort(det_thresh=0.6, iou_threshold=0.15, use_byte=True)
-        args = make_parser().parse_args()
-        self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                    iou_threshold=args.iou_thresh,
-                                    asso_func=args.asso,
-                                    delta_t=args.deltat,
-                                    inertia=args.inertia,
-                                    use_byte=args.use_byte)
-        # args.track_thresh = 0.2
-        # self.tracker = Sort(args, det_thresh=args.track_thresh)
+        cfg = dict(getattr(instance_bank, "tbd_handler_cfg", {}))
+        self.det_thresh = cfg.get("det_thresh", 0.10)
+        self.nms_iou = cfg.get("nms_iou", 0.35)
+        self.reset_time_gap = cfg.get("reset_time_gap", 100)
+
+        self.tracker_args = self._build_tracker_args(
+            getattr(instance_bank, "tbd_tracker_cfg", {})
+        )
+        self.tracker = self._build_tracker()
         self.save_data = {}
 
     def __getattr__(self, name):
-        # use instance_bank attr as normal
-        if name in self.instance_bank.__dict__:
-            return getattr(self.instance_bank, name)
-        else:
-            return getattr(self, name)
-        
-    def __setattr__(self, name, value):
-        # 
-        if name != 'instance_bank':
-            setattr(self.instance_bank, name, value)
-        else:
-            super().__setattr__(name, value)
+        return getattr(self.instance_bank, name)
+
+    def _build_tracker_args(self, override_cfg):
+        args = make_parser().parse_args([])
+        override_cfg = dict(override_cfg or {})
+        unknown_keys = sorted(set(override_cfg) - set(vars(args)))
+        if unknown_keys:
+            raise KeyError(
+                "Unknown HybridSORT tracker config keys: %s"
+                % ", ".join(unknown_keys)
+            )
+        for key, value in override_cfg.items():
+            setattr(args, key, value)
+        return args
+
+    def _build_tracker(self):
+        args = copy.deepcopy(self.tracker_args)
+        return Hybrid_Sort(
+            args,
+            det_thresh=args.track_thresh,
+            iou_threshold=args.iou_thresh,
+            asso_func=args.asso,
+            delta_t=args.deltat,
+            inertia=args.inertia,
+            use_byte=args.use_byte,
+        )
 
     def query_handler(self, bbox, score, meta, qt):
         self.img_wh = meta['image_wh'][0][0].cpu().numpy()
         self.ori_shape = np.array([meta['ori_shape'][1][0].cpu().numpy(), meta['ori_shape'][0][0].cpu().numpy()])
-        scale_w = self.ori_shape[0] / self.img_wh[0]
+        curr_ts = _timestamp_to_scalar(meta['timestamp'])
+        prev_ts = _timestamp_to_scalar(self.instance_bank.timestamp)
+        if prev_ts is None or abs(prev_ts - curr_ts) > self.reset_time_gap:
+            self.tracker = self._build_tracker()
+            self.instance_bank.frame_id = 0
+
         mask = score > self.det_thresh
         bbox = bbox[mask.squeeze(-1)]
-        bbox = STrack.cxcywh_to_tlbr_to_tensor(bbox)
-        bbox[:,[0,2]] *= self.img_wh[0]
-        bbox[:,[1,3]] *= self.img_wh[1]
         score = score[mask]
-        bbox = bbox.to(dtype=torch.int, device=bbox.device)
-        bbox = bbox.to(dtype=torch.float32, device=bbox.device)
-        if meta['image_wh'][0][0][0]-meta['ori_shape'][1] > 0 :
-            cx = (bbox[:,0] + bbox[:,2])/2
-            mask = cx < meta['ori_shape'][1]
-            bbox = bbox[mask]
-            score = score[mask]
-   
-        keep_indices = nms(bbox, score, iou_threshold=0.35)
-        bbox = bbox[keep_indices]
-        score = score[keep_indices]
+        if bbox.numel() > 0:
+            bbox = STrack.cxcywh_to_tlbr_to_tensor(bbox)
+            bbox[:, [0, 2]] *= self.img_wh[0]
+            bbox[:, [1, 3]] *= self.img_wh[1]
+            bbox = bbox.to(dtype=torch.int, device=bbox.device)
+            bbox = bbox.to(dtype=torch.float32, device=bbox.device)
+            if meta['image_wh'][0][0][0] - meta['ori_shape'][1] > 0:
+                cx = (bbox[:, 0] + bbox[:, 2]) / 2
+                mask = cx < meta['ori_shape'][1]
+                bbox = bbox[mask]
+                score = score[mask]
 
-        dets = torch.cat([bbox, score.unsqueeze(1)], dim=1)
-
-        count = 0
-        if self.timestamp is None or abs(self.timestamp - meta['timestamp']) >100:
-            args = make_parser().parse_args()
-            self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                            iou_threshold=args.iou_thresh,
-                                            asso_func=args.asso,
-                                            delta_t=args.deltat,
-                                            inertia=args.inertia,
-                                            use_byte=args.use_byte)
-            # args.track_thresh = 0.2
-            # self.tracker = Sort(args, det_thresh=args.track_thresh)
-            self.frame_id = 0
-            # with open("/root/autodl-tmp/sparse4D_track/huang-2-2019-01-25_0.pkl", 'wb') as f:
-            #     pickle.dump(self.save_data, f)
-            # print("save!!!")
-
+            if bbox.shape[0] > 0:
+                keep_indices = nms(bbox, score, iou_threshold=self.nms_iou)
+                bbox = bbox[keep_indices]
+                score = score[keep_indices]
+            dets = torch.cat([bbox, score.unsqueeze(1)], dim=1)
+        else:
+            dets = bbox.new_zeros((0, 5))
 
         results, tracklets = self.tracker.update(dets.cpu().numpy())
 
@@ -108,9 +124,9 @@ class TrackHandler:
         #     }
         # )
 
-        self.timestamp = meta['timestamp']
-        self.frame_id += 1
-        self.starcks = tracklets
+        self.instance_bank.timestamp = curr_ts
+        self.instance_bank.frame_id += 1
+        self.instance_bank.starcks = tracklets
 
         return results, []
         
