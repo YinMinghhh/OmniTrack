@@ -11,8 +11,12 @@ PKL_OUT=${PKL_OUT:-work_dirs/jrdb2019_4g_bs2/results.pkl}
 JSON_OUT=${JSON_OUT:-results/submission/results_jrdb2d.json}
 WORKSPACE=${WORKSPACE:-"$ROOT_DIR/evaluation_workspace"}
 INFER_SPLIT=${INFER_SPLIT:-val}
+TRACKING_MODE=${TRACKING_MODE:-e2e}
+TBD_BACKEND=${TBD_BACKEND:-hybridsort}
+EXTRA_CFG_OPTIONS=${EXTRA_CFG_OPTIONS:-}
 ANN_ROOT=data/JRDB2019_2d_stitched_anno_pkls
 PRED_DIR="$WORKSPACE/pred/JRDB-train"
+JSON_DIR=$(dirname "$JSON_OUT")
 
 case "$INFER_SPLIT" in
   train)
@@ -28,10 +32,25 @@ case "$INFER_SPLIT" in
 esac
 
 cd "$ROOT_DIR"
+mkdir -p "$(dirname "$PKL_OUT")" "$JSON_DIR"
+
+CFG_OPTIONS=(
+  "data.test.ann_file=$TEST_ANN_FILE"
+  "model.head.instance_bank.tracking_mode=$TRACKING_MODE"
+  "model.head.instance_bank.tbd_backend=$TBD_BACKEND"
+)
+if [[ -n "$EXTRA_CFG_OPTIONS" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_CFG_OPTIONS_ARR=($EXTRA_CFG_OPTIONS)
+  CFG_OPTIONS+=("${EXTRA_CFG_OPTIONS_ARR[@]}")
+fi
 
 echo "=== Eval Config ==="
 echo "Inference split: $INFER_SPLIT"
 echo "Inference ann_file: $TEST_ANN_FILE"
+echo "Tracking mode: $TRACKING_MODE"
+echo "TBD backend: $TBD_BACKEND"
+echo "JSON output: $JSON_OUT"
 
 echo "=== 1/7 Inference (model -> JSON/PKL) ==="
 CUDA_VISIBLE_DEVICES="$GPU_ID" "$PYTHON_BIN" tools/test.py \
@@ -39,7 +58,8 @@ CUDA_VISIBLE_DEVICES="$GPU_ID" "$PYTHON_BIN" tools/test.py \
   "$CHECKPOINT" \
   --out "$PKL_OUT" \
   --eval track \
-  --cfg-options "data.test.ann_file=$TEST_ANN_FILE"
+  --eval-options "jsonfile_prefix=$JSON_DIR" \
+  --cfg-options "${CFG_OPTIONS[@]}"
 
 echo "=== 2/7 Sanity Check (JSON structure) ==="
 "$PYTHON_BIN" tools/eval_sanity_check.py --pred-json "$JSON_OUT"

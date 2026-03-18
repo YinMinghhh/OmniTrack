@@ -1,10 +1,7 @@
 # query_handler_module.py
 import torch
-from torch import nn
 import numpy as np
-from .ops import xywh2xyxy,xyxy2xywh
 from ..track.strack import STrack
-from ..track.kalman_filter import KalmanFilter
 from ..track.matching import iou_distance, iou_score
 
 class TrackState(object):
@@ -14,74 +11,50 @@ class TrackState(object):
     Removed = 3
 
 
+def _timestamp_to_scalar(ts):
+    if ts is None:
+        return None
+    if hasattr(ts, "numel"):
+        if ts.numel() > 1:
+            ts = ts[0]
+        if hasattr(ts, "item"):
+            ts = ts.item()
+        return ts
+    if isinstance(ts, (list, tuple)):
+        if len(ts) == 0:
+            return None
+        return _timestamp_to_scalar(ts[0])
+    return ts
+
+
 class QueryHandler:
     def __init__(self, instance_bank):
         self.instance_bank = instance_bank
-        # self.instance_bank.nms_thresh = 0.05
-        # self.instance_bank.track_thresh = 0.5
-        # self.instance_bank.det_thresh = 0.20
-        # self.instance_bank.init_thresh = 0.9
-
-        self.instance_bank.nms_thresh = 0.05
-        self.instance_bank.init_thresh = 0.315
-        self.instance_bank.det_thresh = 0.10
-        self.instance_bank.track_thresh = 0.39
+        cfg = dict(getattr(instance_bank, "e2e_handler_cfg", {}))
+        self.nms_thresh = cfg.get("nms_thresh", 0.05)
+        self.init_thresh = cfg.get("init_thresh", 0.315)
+        self.det_thresh = cfg.get("det_thresh", 0.10)
+        self.track_thresh = cfg.get("track_thresh", 0.39)
+        self.max_time_lost = cfg.get("max_time_lost", 10)
+        self.reset_time_gap = 100
 
     def __getattr__(self, name):
-        # 
         return getattr(self.instance_bank, name)
-
-    def __setattr__(self, name, value):
-        # 
-        if name != 'instance_bank':
-            setattr(self.instance_bank, name, value)
-        else:
-            super().__setattr__(name, value)
 
     def query_handler(self, bbox, score, meta, qt):
         self.img_wh = meta['image_wh'][0][0].cpu().numpy()
         self.ori_shape = np.array([meta['ori_shape'][1][0].cpu().numpy(), meta['ori_shape'][0][0].cpu().numpy()])
         scale_w = self.ori_shape[0] / self.img_wh[0]
 
-        # === [修复开始] 提取标量时间戳 ===
-        def to_scalar(ts):
-            # 如果是 None，直接返回
-            if ts is None: return None
-            # 如果是 Tensor
-            if hasattr(ts, 'numel'):
-                # 如果元素不止一个 (比如 batch_size=4)，只取第一个
-                if ts.numel() > 1:
-                    ts = ts[0]
-                # 转为 python 标量
-                if hasattr(ts, 'item'):
-                    ts = ts.item()
-            # 如果是 List/Tuple
-            elif isinstance(ts, (list, tuple)):
-                ts = ts[0]
-                # 递归处理里面可能是 Tensor 的情况
-                if hasattr(ts, 'numel') and ts.numel() > 1:
-                    ts = ts[0]
-                if hasattr(ts, 'item'):
-                    ts = ts.item()
-            return ts
-
-        curr_ts = to_scalar(meta['timestamp'])
-        prev_ts = to_scalar(self.timestamp)
-
-        # 使用处理后的标量进行比较，解决 RuntimeError
-        if prev_ts is None or abs(prev_ts - curr_ts) > 100:
-            self.frame_id = 0
-            # 这里通常意味着新视频序列开始，建议清空 self.timestamp 防止逻辑混乱
-            # self.timestamp = None
-
-        # [重要] 立即更新 self.timestamp 为当前的标量值，供下一帧使用
-        # 这一步必须做，否则 self.timestamp 一直是 None 或者旧 Tensor
-        self.timestamp = curr_ts
-        # === [修复结束] ===
+        curr_ts = _timestamp_to_scalar(meta['timestamp'])
+        prev_ts = _timestamp_to_scalar(self.instance_bank.timestamp)
+        if prev_ts is None or abs(prev_ts - curr_ts) > self.reset_time_gap:
+            self.instance_bank.frame_id = 0
+        self.instance_bank.timestamp = curr_ts
 
         from torchvision.ops import nms
         """ Step 1: initialize tracks"""
-        if self.frame_id == 0:
+        if self.instance_bank.frame_id == 0:
             mask = score > self.det_thresh
             bbox = bbox[mask.squeeze(-1)]
             score = score[mask]
@@ -96,14 +69,14 @@ class QueryHandler:
             
             track = [STrack(tlwh, s.cpu().numpy(), c.cpu().numpy()) for (tlwh, s, c) in zip(bbox, score, cls)]
             for t in track:
-                t.activate(self.kalman_filter, self.frame_id)
-                self.starcks.append(t)
+                t.activate(self.kalman_filter, self.instance_bank.frame_id)
+                self.instance_bank.starcks.append(t)
 
             detections = track
 
         else:
             """ Step 2: Init new stracks"""
-            strack_pool = [t for t in self.starcks]
+            strack_pool = [t for t in self.instance_bank.starcks]
             STrack.multi_predict(strack_pool)
             num_track = len(strack_pool)
             # predict the current location with KF
@@ -155,7 +128,7 @@ class QueryHandler:
                 conf = d.score 
                 if conf > self.track_thresh:
                 # if t.score - d.score < 0.2:
-                    t.update(d, self.frame_id)
+                    t.update(d, self.instance_bank.frame_id)
                     tracks.append(t)
                 else:
                     lost_stracks.append(t)
@@ -185,23 +158,23 @@ class QueryHandler:
                 u_detection = [u for i, u in enumerate(u_detection) if mask[i] and i in keep_ub]   # mask the bbox in the overlap area of track
                 for det in u_detection:
                     if det.score > self.init_thresh:
-                        det.activate(self.kalman_filter, self.frame_id)
+                        det.activate(self.kalman_filter, self.instance_bank.frame_id)
                         tracks.append(det)
 
             # Step 3: remove lost tracks
             keep_tracks = []
             for t in lost_stracks:
-                if self.frame_id - t.end_frame < self.max_time_lost:
+                if self.instance_bank.frame_id - t.end_frame < self.max_time_lost:
                     t.mark_lost()
                     keep_tracks.append(t)  
 
             # tracks = joint_stracks(tracks, keep_tracks)
-            self.starcks = tracks
+            self.instance_bank.starcks = tracks
 
-        self.timestamp = meta['timestamp']
-        self.frame_id += 1
+        self.instance_bank.timestamp = curr_ts
+        self.instance_bank.frame_id += 1
 
-        output_stracks = [track for track in self.starcks if track.is_activated and track.state != TrackState.Lost]
+        output_stracks = [track for track in self.instance_bank.starcks if track.is_activated and track.state != TrackState.Lost]
         return output_stracks, detections
     
 
