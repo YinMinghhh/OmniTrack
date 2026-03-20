@@ -8,4 +8,4 @@ export TBD_BACKEND=${TBD_BACKEND:-hybridsort}
 export PKL_OUT=${PKL_OUT:-work_dirs/jrdb2019_4g_bs2_tbd_hybridsort/results_test.pkl}
 export SUBMISSION_ROOT=${SUBMISSION_ROOT:-results/test_submission_tbd_hybridsort}
 
-bash "$ROOT_DIR/scripts/run_test_submission.sh"
+bash "$ROOT_DIR/scripts/run_test_submission_e2e.sh"

@@ -7,7 +7,7 @@ This note documents what the current scripts and evaluator actually do, and wher
 Files covered:
 
 - `scripts/train_jrdb2019_4g_bs2.sh`
-- `scripts/run_eval.sh`
+- `scripts/run_eval_e2e.sh`
 - `tools/convert_pred_json2kitti.py`
 - `tools/prepare_eval_env.py`
 - `tools/eval_sanity_check.py`
@@ -75,7 +75,7 @@ Conclusion:
 
 - Keep only for local history/debug context.
 
-### 4.3 `scripts/run_eval.sh`
+### 4.3 `scripts/run_eval_e2e.sh`
 
 Role:
 
@@ -99,7 +99,7 @@ TrackEval JRDB2D parser loads columns 6:10 as box coordinates and computes simil
 
 - `_calculate_box_ious(..., box_format='xywh')`
 
-Current canonical pipeline (`scripts/run_eval.sh`) now writes:
+Current canonical pipeline (`scripts/run_eval_e2e.sh`) now writes:
 
 - `left, top, width, height` (`xywh`)
 - Explicitly pinned via `--box_format xywh` for:

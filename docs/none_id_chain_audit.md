@@ -23,7 +23,7 @@
 
 ## 2. 先看整体评估链路
 
-当前标准入口是 [scripts/run_eval.sh](../scripts/run_eval.sh)。
+当前标准入口是 [scripts/run_eval_e2e.sh](../scripts/run_eval_e2e.sh)。
 
 它做的事情可以概括成 6 步：
 

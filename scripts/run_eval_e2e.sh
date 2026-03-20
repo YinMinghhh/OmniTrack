@@ -9,7 +9,8 @@ CONFIG=${CONFIG:-projects/configs/JRDB_OmniTrack.py}
 CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_135900.pth}
 PKL_OUT=${PKL_OUT:-work_dirs/jrdb2019_4g_bs2/results.pkl}
 JSON_OUT=${JSON_OUT:-results/submission/results_jrdb2d.json}
-WORKSPACE=${WORKSPACE:-"$ROOT_DIR/evaluation_workspace"}
+# Keep local TrackEval workspaces under results/ instead of the repo root.
+WORKSPACE=${WORKSPACE:-"$ROOT_DIR/results/eval/jrdb_e2e"}
 INFER_SPLIT=${INFER_SPLIT:-val}
 TRACKING_MODE=${TRACKING_MODE:-e2e}
 TBD_BACKEND=${TBD_BACKEND:-hybridsort}

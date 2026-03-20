@@ -17,7 +17,7 @@
 
 ```mermaid
 flowchart LR
-    A["scripts/run_eval.sh"] --> B["tools/test.py"]
+    A["scripts/run_eval_e2e.sh"] --> B["tools/test.py"]
     B --> C["JRDB2DOMNIDETR.simple_test()"]
     C --> D["extract_feat() + ResNet"]
     D --> E["CircularStatE.forward()"]
@@ -33,7 +33,7 @@ flowchart LR
 
 按代码调用顺序，主链如下：
 
-1. `scripts/run_eval.sh:37-40` 调 `tools/test.py`，默认配置是 `projects/configs/JRDB_OmniTrack.py`。
+1. `scripts/run_eval_e2e.sh:37-40` 调 `tools/test.py`，默认配置是 `projects/configs/JRDB_OmniTrack.py`。
 2. `tools/test.py:142-235` 读 config、build detector。
 3. `projects/mmdet3d_plugin/models/jrdb2d_Omnidetr.py:150-154` 在 `simple_test()` 中先 `extract_feat()`，再调用 `head()` 和 `head.post_process()`。
 4. `projects/mmdet3d_plugin/models/jrdb2d_Omnidetr.py:64-91` 的 `extract_feat()` 先过 backbone，再过 `CircularStatE`。

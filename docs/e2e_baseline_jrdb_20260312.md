@@ -6,7 +6,7 @@ Checkpoint: work_dirs/jrdb2019_4g_bs2/iter_135900.pth
 
 Local protocol:
 - Split: JRDB val7
-- Script: scripts/run_eval.sh
+- Script: scripts/run_eval_e2e.sh
 - Split sanity: passed
 - Combined: HOTA=..., MOTA=..., IDF1=...
 
@@ -30,7 +30,7 @@ Decision:
 - Start a separate TBD/DA reproduction line from this baseline branchpoint.
 
 ```
-INFER_SPLIT=train bash scripts/run_eval.sh
-INFER_SPLIT=val bash scripts/run_eval.sh
-INFER_SPLIT=test bash scripts/run_test_submission.sh
+INFER_SPLIT=train bash scripts/run_eval_e2e.sh
+INFER_SPLIT=val bash scripts/run_eval_e2e.sh
+INFER_SPLIT=test bash scripts/run_test_submission_e2e.sh
 ```

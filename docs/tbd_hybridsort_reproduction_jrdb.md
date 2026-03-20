@@ -48,7 +48,7 @@ tbd_backend = "hybridsort"
 ### 3.1 保持默认 E2E
 
 ```bash
-INFER_SPLIT=val bash scripts/run_eval.sh
+INFER_SPLIT=val bash scripts/run_eval_e2e.sh
 ```
 
 ### 3.2 直接跑 TBD-HybridSORT
@@ -63,14 +63,14 @@ INFER_SPLIT=val bash scripts/run_eval_tbd.sh
 TRACKING_MODE=tbd \
 TBD_BACKEND=hybridsort \
 INFER_SPLIT=val \
-bash scripts/run_eval.sh
+bash scripts/run_eval_e2e.sh
 ```
 
 TBD wrapper 默认把结果写到独立目录，避免覆盖 E2E baseline：
 
 - `work_dirs/jrdb2019_4g_bs2_tbd_hybridsort/results.pkl`
 - `results/submission_tbd_hybridsort/results_jrdb2d.json`
-- `evaluation_workspace_tbd_hybridsort/`
+- `results/eval/jrdb_tbd_hybridsort/`
 
 ## 4. 训练、评估、提交的完整流程
 
@@ -146,7 +146,7 @@ TRACKING_MODE=tbd \
 TBD_BACKEND=hybridsort \
 EXTRA_CFG_OPTIONS="model.head.instance_bank.tbd_tracker_cfg.track_thresh=0.55" \
 INFER_SPLIT=val \
-bash scripts/run_eval.sh
+bash scripts/run_eval_e2e.sh
 ```
 
 同样也可以用于 test submission：
@@ -155,7 +155,7 @@ bash scripts/run_eval.sh
 TRACKING_MODE=tbd \
 TBD_BACKEND=hybridsort \
 INFER_SPLIT=test \
-bash scripts/run_test_submission.sh
+bash scripts/run_test_submission_e2e.sh
 ```
 
 ## 6. 当前这版 TBD 的配置边界
@@ -225,9 +225,9 @@ instance_bank = dict(
 
 如果目标是可信的 JRDB baseline / reproduction 数字，继续使用：
 
-- `scripts/run_eval.sh`
+- `scripts/run_eval_e2e.sh`
 - `scripts/run_eval_tbd.sh`
-- `scripts/run_test_submission.sh`
+- `scripts/run_test_submission_e2e.sh`
 - `scripts/run_test_submission_tbd.sh`
 
 不要绕开这条脚本链自己拼评估流程，否则很容易再次踩到 JSON / TrackEval / split 对齐的问题。
