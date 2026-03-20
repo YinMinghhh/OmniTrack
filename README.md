@@ -38,7 +38,9 @@ Requirements are not in principle hard requirements, but there might be some dif
 - torch 2.1.1
 
 [Quick Start](docs/quick_start.md) \
-[Dataset preparation](docs/dataset_preparation.md)
+[Dataset preparation](docs/dataset_preparation.md) \
+[Docs index](docs/README.md) \
+[Repo structure](docs/repo_structure.md)
 
 ## Dataset
 
