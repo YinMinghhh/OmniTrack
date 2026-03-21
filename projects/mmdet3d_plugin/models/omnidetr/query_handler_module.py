@@ -27,6 +27,17 @@ def _timestamp_to_scalar(ts):
     return ts
 
 
+def _sample_track_ids(stracks, limit=5):
+    limit = max(int(limit), 0)
+    track_ids = []
+    for track in stracks[:limit]:
+        track_id = getattr(track, "track_id", None)
+        if track_id is None:
+            continue
+        track_ids.append(int(track_id))
+    return track_ids
+
+
 class QueryHandler:
     def __init__(self, instance_bank):
         self.instance_bank = instance_bank
@@ -36,15 +47,31 @@ class QueryHandler:
         self.det_thresh = cfg.get("det_thresh", 0.10)
         self.track_thresh = cfg.get("track_thresh", 0.39)
         self.max_time_lost = cfg.get("max_time_lost", 10)
+        self.use_wrap_iou = cfg.get("use_wrap_iou", False)
+        self.wrap_iou_width = cfg.get("wrap_iou_width", None)
+        self.audit_lost_tracks = cfg.get("audit_lost_tracks", False)
+        self.audit_log_limit = int(cfg.get("audit_log_limit", -1))
+        self.audit_id_sample_size = int(cfg.get("audit_id_sample_size", 5))
         self.reset_time_gap = 100
 
     def __getattr__(self, name):
         return getattr(self.instance_bank, name)
 
+    def _should_audit(self, frame_id):
+        if not self.audit_lost_tracks:
+            return False
+        if self.audit_log_limit >= 0 and frame_id >= self.audit_log_limit:
+            return False
+        return True
+
     def query_handler(self, bbox, score, meta, qt):
         self.img_wh = meta['image_wh'][0][0].cpu().numpy()
         self.ori_shape = np.array([meta['ori_shape'][1][0].cpu().numpy(), meta['ori_shape'][0][0].cpu().numpy()])
         scale_w = self.ori_shape[0] / self.img_wh[0]
+        wrap_w = None
+        if self.use_wrap_iou:
+            wrap_w = float(self.wrap_iou_width) if self.wrap_iou_width is not None else float(scale_w)
+        audit_info = None
 
         curr_ts = _timestamp_to_scalar(meta['timestamp'])
         prev_ts = _timestamp_to_scalar(self.instance_bank.timestamp)
@@ -73,12 +100,27 @@ class QueryHandler:
                 self.instance_bank.starcks.append(t)
 
             detections = track
+            if self._should_audit(self.instance_bank.frame_id):
+                audit_info = dict(
+                    frame_id=self.instance_bank.frame_id,
+                    prev_bank=0,
+                    track_queries=0,
+                    nms_removed=0,
+                    score_removed=0,
+                    kept_lost=0,
+                    merged_lost=0,
+                    expired_lost=0,
+                    next_bank=len(self.instance_bank.starcks),
+                    keep_ids=[],
+                    next_ids=_sample_track_ids(self.instance_bank.starcks, self.audit_id_sample_size),
+                )
 
         else:
             """ Step 2: Init new stracks"""
             strack_pool = [t for t in self.instance_bank.starcks]
             STrack.multi_predict(strack_pool)
             num_track = len(strack_pool)
+            prev_bank_count = len(strack_pool)
             # predict the current location with KF
             track_bboxes, query_bboxes = torch.split(bbox, [num_track, bbox.size(1) - num_track], dim=1)
             track_scores, query_scores = torch.split(score, [num_track, score.size(1) - num_track], dim=1)
@@ -95,13 +137,18 @@ class QueryHandler:
             
             # nms track   due to  query may be overlap with track
             track_bboxes_ltbr = STrack.cxcywh_to_tlbr_to_tensor(track_bboxes)
-            iou_s = iou_score(STrack.cxcywh_to_tlbr(track_bboxes), [t.tlbr for t in strack_pool] )  # IOU score
+            iou_s = iou_score(
+                STrack.cxcywh_to_tlbr(track_bboxes),
+                [t.tlbr for t in strack_pool],
+                wrap_w=wrap_w,
+            )  # IOU score
             refind_score = track_scores.squeeze(1) * torch.from_numpy(iou_s.copy()).to(track_scores.device)
             
             keep_indices = nms(track_bboxes_ltbr, refind_score, iou_threshold=0.5)  # nms 
             remove_indices = [i for i in range(len(track_scores)) if i not in keep_indices]
             lost_stracks = [strack_pool[i] for i in remove_indices]
             strack_pool = [strack_pool[i] for i in keep_indices]
+            nms_removed_count = len(remove_indices)
             track_bboxes = track_bboxes[keep_indices]
             track_scores = track_scores[keep_indices]
             cls = torch.zeros_like(track_scores)
@@ -123,6 +170,7 @@ class QueryHandler:
             query_qt = query_qt.squeeze(0)
             detections = [STrack(tlwh, s.cpu().numpy(), c.cpu().numpy(), qt.cpu().numpy()) for (tlwh, s, c, qt) in zip(det_bbox, score, cls, query_qt)]
             
+            score_removed_count = 0
             for t, d in zip(strack_pool, track_bboxes):
                 # conf = d.score * d.qt if d.qt > 0 else d.score
                 conf = d.score 
@@ -132,12 +180,13 @@ class QueryHandler:
                     tracks.append(t)
                 else:
                     lost_stracks.append(t)
+                    score_removed_count += 1
  
             # step 2.1: init new track
             # remove detections which is overlap with track query
             if len(strack_pool) > 0 and len(detections) > 0:
                 # detection nms
-                dists = iou_distance(detections, strack_pool)
+                dists = iou_distance(detections, strack_pool, wrap_w=wrap_w)
                 min_values = np.min(dists, axis=1)
                 mask = min_values > self.nms_thresh
                 u_detection = [detections[i] for i in range(len(detections)) if mask[i]]
@@ -163,18 +212,65 @@ class QueryHandler:
 
             # Step 3: remove lost tracks
             keep_tracks = []
+            expired_lost_count = 0
             for t in lost_stracks:
                 if self.instance_bank.frame_id - t.end_frame < self.max_time_lost:
                     t.mark_lost()
                     keep_tracks.append(t)  
+                else:
+                    expired_lost_count += 1
 
-            # tracks = joint_stracks(tracks, keep_tracks)
+            tracks = joint_stracks(tracks, keep_tracks)
             self.instance_bank.starcks = tracks
+            if self._should_audit(self.instance_bank.frame_id):
+                next_bank_ids = {
+                    int(track.track_id)
+                    for track in self.instance_bank.starcks
+                    if getattr(track, "track_id", None) is not None
+                }
+                merged_lost_count = sum(
+                    1
+                    for track in keep_tracks
+                    if getattr(track, "track_id", None) in next_bank_ids
+                )
+                audit_info = dict(
+                    frame_id=self.instance_bank.frame_id,
+                    prev_bank=prev_bank_count,
+                    track_queries=num_track,
+                    nms_removed=nms_removed_count,
+                    score_removed=score_removed_count,
+                    kept_lost=len(keep_tracks),
+                    merged_lost=merged_lost_count,
+                    expired_lost=expired_lost_count,
+                    next_bank=len(self.instance_bank.starcks),
+                    keep_ids=_sample_track_ids(keep_tracks, self.audit_id_sample_size),
+                    next_ids=_sample_track_ids(self.instance_bank.starcks, self.audit_id_sample_size),
+                )
 
         self.instance_bank.timestamp = curr_ts
         self.instance_bank.frame_id += 1
 
         output_stracks = [track for track in self.instance_bank.starcks if track.is_activated and track.state != TrackState.Lost]
+        if audit_info is not None:
+            print(
+                "[QH][AUDIT] frame=%d prev_bank=%d track_queries=%d nms_removed=%d "
+                "score_removed=%d kept_lost=%d merged_lost=%d expired_lost=%d "
+                "next_bank=%d output_tracks=%d keep_ids=%s next_ids=%s"
+                % (
+                    audit_info["frame_id"],
+                    audit_info["prev_bank"],
+                    audit_info["track_queries"],
+                    audit_info["nms_removed"],
+                    audit_info["score_removed"],
+                    audit_info["kept_lost"],
+                    audit_info["merged_lost"],
+                    audit_info["expired_lost"],
+                    audit_info["next_bank"],
+                    len(output_stracks),
+                    audit_info["keep_ids"],
+                    audit_info["next_ids"],
+                )
+            )
         return output_stracks, detections
     
 
