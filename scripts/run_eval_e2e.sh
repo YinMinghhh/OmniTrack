@@ -4,6 +4,22 @@ set -euo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PYTHON_BIN=${PYTHON_BIN:-python}
 
+normalize_path() {
+  local path="$1"
+  local abs_path
+  if [[ "$path" = /* ]]; then
+    abs_path="$path"
+  else
+    abs_path="$ROOT_DIR/$path"
+  fi
+
+  if command -v realpath >/dev/null 2>&1; then
+    realpath -m "$abs_path"
+  else
+    printf '%s\n' "$abs_path"
+  fi
+}
+
 GPU_ID=${GPU_ID:-1}
 CONFIG=${CONFIG:-projects/configs/JRDB_OmniTrack.py}
 CHECKPOINT=${CHECKPOINT:-work_dirs/jrdb2019_4g_bs2/iter_135900.pth}
@@ -15,6 +31,7 @@ INFER_SPLIT=${INFER_SPLIT:-val}
 TRACKING_MODE=${TRACKING_MODE:-e2e}
 TBD_BACKEND=${TBD_BACKEND:-hybridsort}
 EXTRA_CFG_OPTIONS=${EXTRA_CFG_OPTIONS:-}
+WORKSPACE=$(normalize_path "$WORKSPACE")
 ANN_ROOT=data/JRDB2019_2d_stitched_anno_pkls
 PRED_DIR="$WORKSPACE/pred/JRDB-train"
 JSON_DIR=$(dirname "$JSON_OUT")
@@ -51,6 +68,7 @@ echo "Inference split: $INFER_SPLIT"
 echo "Inference ann_file: $TEST_ANN_FILE"
 echo "Tracking mode: $TRACKING_MODE"
 echo "TBD backend: $TBD_BACKEND"
+echo "Workspace: $WORKSPACE"
 echo "JSON output: $JSON_OUT"
 
 echo "=== 1/7 Inference (model -> JSON/PKL) ==="
