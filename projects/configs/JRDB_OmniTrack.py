@@ -131,6 +131,8 @@ model = dict(
                 track_thresh=0.39,
                 init_thresh=0.315,
                 max_time_lost=10,
+                use_wrap_iou=False,
+                wrap_iou_width=None,
             ),
             tbd_handler_cfg=dict(
                 det_thresh=0.10,
