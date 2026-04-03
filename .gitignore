@@ -14,7 +14,7 @@ projects/mmdet3d_plugin/ops/deformable_aggregation_ext.egg-info/PKG-INFO
 projects/mmdet3d_plugin/ops/deformable_aggregation_ext.egg-info/SOURCES.txt
 projects/mmdet3d_plugin/ops/deformable_aggregation_ext.egg-info/top_level.txt
 
-mmcv-full/build/*
+mmcv-full-1.7.1/build/*
 results/*
 pypcd/*
 results_jrdb2d.json

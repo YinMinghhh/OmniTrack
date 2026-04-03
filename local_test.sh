@@ -1,6 +1,13 @@
-export PYTHONPATH=$PYTHONPATH:./
-export CUDA_VISIBLE_DEVICES=0
+export PYTHONPATH=$PYTHONPATH:./:./jrdb_toolkit/detection_eval
 export PORT=29532
+
+if [ -n "$3" ] && [[ "$3" != --* ]]; then
+    export CUDA_VISIBLE_DEVICES=$3
+    extra_args=("${@:4}")
+else
+    export CUDA_VISIBLE_DEVICES=0
+    extra_args=("${@:3}")
+fi
 
 gpus=(${CUDA_VISIBLE_DEVICES//,/ })
 gpu_num=${#gpus[@]}
@@ -19,11 +26,11 @@ then
         ${checkpoint} \
         ${gpu_num} \
         --eval bbox \
-        $@
+        "${extra_args[@]}"
 else
     python ./tools/test.py \
         ${config} \
         ${checkpoint} \
         --eval bbox \
-        $@
+        "${extra_args[@]}"
 fi

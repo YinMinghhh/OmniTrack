@@ -1,5 +1,11 @@
-export CUDA_VISIBLE_DEVICES=0
-export PYTHONPATH=$PYTHONPATH:./
+if [ -n "$2" ] && [[ "$2" != --* ]]; then
+    export CUDA_VISIBLE_DEVICES=$2
+    extra_args=("${@:3}")
+else
+    export CUDA_VISIBLE_DEVICES=0
+    extra_args=("${@:2}")
+fi
+export PYTHONPATH=$PYTHONPATH:./:./jrdb_toolkit/detection_eval
 
 gpus=(${CUDA_VISIBLE_DEVICES//,/ })
 gpu_num=${#gpus[@]}
@@ -12,8 +18,11 @@ then
     bash ./tools/dist_train.sh \
         ${config} \
         ${gpu_num} \
-        --work-dir=work_dirs/$1
+        --work-dir=work_dirs/$1 \
+        "${extra_args[@]}"
 else
     python ./tools/train.py \
-        ${config}
+        ${config} \
+        --work-dir=work_dirs/$1 \
+        "${extra_args[@]}"
 fi
