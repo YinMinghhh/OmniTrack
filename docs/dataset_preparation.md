@@ -36,7 +36,9 @@ cd tools/
 python JRDB2019_2d_stitched_converter.py
 
 # generate k-means anchors
-python anchor_2d_generator.py --ann_file ../data/JRDB2019_2d_stitched_anno_pkls/JRDB_infos_train_v1.2.pkl
+python anchor_2d_generator.py \
+  --ann_file ../data/JRDB2019_2d_stitched_anno_pkls/JRDB_infos_train_v1.2.pkl \
+  --output_file_name JRDB2D_kmeans900v1_1.npy
 
 cd ..
 ```

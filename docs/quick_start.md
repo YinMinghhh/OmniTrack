@@ -22,9 +22,9 @@ conda install pytorch==2.1.1 torchvision==0.16.1 torchaudio==2.1.1 pytorch-cuda=
 pip install -r requirements.txt
 ```
 
-## 5. Install causal_conv1d-1.1.1 and mamba-ssm-1.2.0 for SSM
+## 5. Install `causal-conv1d` and `mamba-ssm` for SSM
 ```bash
-pip install causal_conv1d-1.1.1 mamba-ssm-1.2.0
+pip install causal-conv1d==1.1.1 mamba-ssm==1.2.0.post1
 ```
 *if you don\'t use pip to install these wheels, you can download them from [causal_conv1d](https://pan.baidu.com/s/1gGt9navtB5BWnDhy8FLcMg?pwd=xsif ),[mamba-ssm](https://pan.baidu.com/s/1-To0SDHCxD_8ADi-Ofiv2g?pwd=ak6n) and install them manually.*
 
@@ -56,7 +56,9 @@ cd ../../
 ## 8. Generate anchors by K-means
 
 ```bash
-python3 tools/anchor_2d_generator.py --ann_file ${pkl_path}/nuscenes_infos_train.pkl
+python3 tools/anchor_2d_generator.py \
+  --ann_file data/JRDB2019_2d_stitched_anno_pkls/JRDB_infos_train_v1.2.pkl \
+  --output_file_name JRDB2D_kmeans900v1_1.npy
 ```
 
 ## 9. Download pre-trained weights

@@ -275,12 +275,11 @@ class JRDB2019Converter2D(object):
 
             
 
-    @staticmethod
-    def _save_pkl(data, filename, save_root):
+    def _save_pkl(self, data, filename, save_root):
         if len(data) > 0:
             info = {
                 'infos': data,
-                'metadata': dict(version='JRDB_v{self.__version__}')
+                'metadata': dict(version=f'JRDB_v{self.__version__}')
             }
             with open(os.path.join(save_root, filename), 'wb') as f:
                 pkl.dump(info, f)

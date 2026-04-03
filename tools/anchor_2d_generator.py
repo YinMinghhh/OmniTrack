@@ -40,7 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_anchor", type=int, default=900)
     parser.add_argument("--detection_range", type=float, default=55)
     parser.add_argument(
-        "--output_file_name", type=str, default="kmeans900.npy"
+        "--output_file_name", type=str, default="JRDB2D_kmeans900v1_1.npy"
     )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
