@@ -3,6 +3,7 @@ import math
 import os
 import time
 import os.path as osp
+import sys
 import cv2
 import tempfile
 import copy
@@ -22,10 +23,28 @@ from .utils import (
     draw_lidar_bbox3d_on_bev,
     Box as JRDBBox,
 )
-
-import iou3d_nms_cuda
 from scipy.optimize import linear_sum_assignment
 from collections import defaultdict
+
+
+def _get_iou3d_nms_cuda():
+    try:
+        import iou3d_nms_cuda
+    except ModuleNotFoundError:
+        detection_eval_dir = osp.abspath(
+            osp.join(
+                osp.dirname(__file__),
+                "..",
+                "..",
+                "..",
+                "jrdb_toolkit",
+                "detection_eval",
+            )
+        )
+        if detection_eval_dir not in sys.path:
+            sys.path.append(detection_eval_dir)
+        import iou3d_nms_cuda
+    return iou3d_nms_cuda
 
 
 @DATASETS.register_module()
@@ -586,6 +605,7 @@ def iou_matrix_3d_gpu(boxes_a, boxes_b, score):
 
     # bev overlap
     overlaps_bev = torch.cuda.FloatTensor(torch.Size((boxes_a.shape[0], boxes_b.shape[0]))).zero_()  # (N, M)
+    iou3d_nms_cuda = _get_iou3d_nms_cuda()
     iou3d_nms_cuda.boxes_overlap_bev_gpu(boxes_a.contiguous(), boxes_b.contiguous(), overlaps_bev)
 
     max_of_min = torch.max(boxes_a_height_min, boxes_b_height_min)
