@@ -387,6 +387,23 @@ class OmniDETRDetectionLoss(DETRLoss):
     def __init__(self, nc=80):
         super().__init__(nc)
 
+    @staticmethod
+    def _zero_temp_losses_like(total_loss):
+        if not total_loss:
+            return {}
+
+        template = next(iter(total_loss.values())).new_zeros(())
+        temp_loss = {}
+        for loss_name in total_loss.keys():
+            if not loss_name.startswith("loss_"):
+                continue
+            if loss_name.endswith("_dn") or loss_name.endswith("_temp"):
+                continue
+            if loss_name == "loss_qt":
+                continue
+            temp_loss[f"{loss_name}_temp"] = template.clone()
+        return temp_loss
+
 
     def forward(self, preds, batch, dn_bboxes=None, dn_scores=None, dn_meta=None, **kwargs):
         """
@@ -427,10 +444,15 @@ class OmniDETRDetectionLoss(DETRLoss):
                 if match_indices is not None:
                     temp_loss, _ = super().forward(temp_bboxes, temp_scores, batch, postfix="_temp", match_indices=match_indices,)
                     total_loss.update(temp_loss)
+                else:
+                    total_loss.update(self._zero_temp_losses_like(total_loss))
+            else:
+                total_loss.update(self._zero_temp_losses_like(total_loss))
 
         else:
             # If no denoising metadata is provided, set denoising loss to zero
             total_loss.update({f"{k}_dn": torch.tensor(0.0, device=self.device) for k in total_loss.keys()})
+            total_loss.update(self._zero_temp_losses_like(total_loss))
 
         return total_loss, (idx, gt_idx)
     

@@ -167,7 +167,7 @@ train_pipeline = [
             "gt_labels_2d",
             "ori_shape",
         ],
-        meta_keys=["timestamp", "instance_id"],
+        meta_keys=["timestamp", "instance_id", "sample_idx"],
     ),
 ]
 test_pipeline = [

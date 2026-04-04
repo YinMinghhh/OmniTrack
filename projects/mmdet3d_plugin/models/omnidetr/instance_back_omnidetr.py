@@ -1,8 +1,9 @@
-
+import logging
 import torch
 from torch import nn
 import torch.nn.functional as F
 import numpy as np
+import torch.distributed as dist
 
 from mmcv.utils import build_from_cfg
 from mmcv.cnn.bricks.registry import PLUGIN_LAYERS
@@ -78,6 +79,7 @@ class InstanceBackOMNIDETR(nn.Module):
         self.track = None
         self.timestamp = None
         self.temp_count = 0
+        self.temporal_skip_count = 0
         self.prev_id = 0
         self.frame_id = 0
         self.kalman_filter = KalmanFilter()
@@ -118,6 +120,39 @@ class InstanceBackOMNIDETR(nn.Module):
         self.cached_feature = None
         self.cached_anchor = None
         self.metas = None
+
+    @staticmethod
+    def _to_log_list(value):
+        if value is None:
+            return None
+        if torch.is_tensor(value):
+            return value.detach().cpu().reshape(-1).tolist()
+        if isinstance(value, np.ndarray):
+            return value.reshape(-1).tolist()
+        if isinstance(value, tuple):
+            return list(value)
+        return value
+
+    def _log_temporal_skip(self, reason, batch, inter_time=None, mask=None):
+        logger = logging.getLogger("mmdet")
+        if not logger.handlers:
+            return
+
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.temporal_skip_count += 1
+        logger.warning(
+            "Temporal group skipped | rank=%s count=%s reason=%s sample_idx=%s cur_timestamp=%s prev_timestamp=%s inter_time=%s time_mask=%s gt_groups=%s prev_gt_groups=%s",
+            rank,
+            self.temporal_skip_count,
+            reason,
+            batch.get("sample_idx"),
+            self._to_log_list(batch.get("timestamp")),
+            self._to_log_list(self.timestamp),
+            self._to_log_list(inter_time),
+            self._to_log_list(mask),
+            batch.get("gt_groups"),
+            getattr(self, "gt_groups", None),
+        )
         self.mask = None
         self.confidence = None
         self.temp_confidence = None
@@ -393,6 +428,7 @@ class InstanceBackOMNIDETR(nn.Module):
         self.temp_count +=1
 
         if (self.timestamp is None) or (not 'timestamp' in batch):
+            self._log_temporal_skip("missing_history", batch)
             return None, None, atten_mask, dn_meta
 
         cur_timestamp = batch['timestamp']
@@ -400,7 +436,11 @@ class InstanceBackOMNIDETR(nn.Module):
         mask = torch.abs(inter_time) < 0.2   # 0.2s
         
         if self.training: # training mode
-            if mask.sum() == 0 or len(batch['gt_groups'])!= len(self.gt_groups):
+            if mask.sum() == 0:
+                self._log_temporal_skip("time_window_miss", batch, inter_time, mask)
+                return None, None, atten_mask, dn_meta
+            if len(batch['gt_groups'])!= len(self.gt_groups):
+                self._log_temporal_skip("gt_group_size_mismatch", batch, inter_time, mask)
                 return None, None, atten_mask, dn_meta
     
             # mask temp query if the instance is not in the current batch
@@ -658,5 +698,4 @@ class InstanceBackOMNIDETR(nn.Module):
     def query_handler(self, bbox, score, meta, qt=None):
         return self.instance_handler.query_handler(bbox, score, meta, qt)
         
-
 

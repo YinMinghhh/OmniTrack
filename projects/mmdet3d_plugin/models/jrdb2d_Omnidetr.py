@@ -182,6 +182,7 @@ class JRDB2DOMNIDETR(BaseDetector):
             "batch_idx": batch_idx,
             "gt_groups": gt_groups,
             "instance_ids": instance_ids,
-            'timestamp': data['timestamp']
+            "timestamp": data["timestamp"],
+            "sample_idx": [meta.get("sample_idx") for meta in data["img_metas"]],
             }
         return batch
