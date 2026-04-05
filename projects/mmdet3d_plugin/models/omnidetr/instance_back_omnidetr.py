@@ -48,6 +48,11 @@ class InstanceBackOMNIDETR(nn.Module):
         nms_thresh = 0.05,      # nms threshold for track
         init_thresh = 0.55,  # init a track when the score is greater than init_thresh
         extend = False,
+        tracking_mode="e2e",
+        tbd_backend="hybridsort",
+        e2e_handler_cfg=None,
+        tbd_handler_cfg=None,
+        tbd_tracker_cfg=None,
     ):
         super(InstanceBackOMNIDETR, self).__init__()
         self.embed_dims = embed_dims
@@ -91,24 +96,39 @@ class InstanceBackOMNIDETR(nn.Module):
         self.track_thresh = track_thresh
         self.det_thresh = det_thresh
         self.init_thresh = init_thresh
+        self.e2e_handler_cfg = dict(e2e_handler_cfg or {})
+        self.tbd_handler_cfg = dict(tbd_handler_cfg or {})
+        self.tbd_tracker_cfg = dict(tbd_tracker_cfg or {})
 
         # tracking variables
         self.lost_stracks = []
-        self.OCsort = False
-        self.Hybridsort = False
-        self.ByteTrack = False
-        if self.OCsort or self.Hybridsort or self.ByteTrack:
-            self.TBD = True
-        else:
-            self.TBD = False
+        if not isinstance(tracking_mode, str):
+            raise TypeError("tracking_mode must be a string.")
+        if not isinstance(tbd_backend, str):
+            raise TypeError("tbd_backend must be a string.")
+
+        self.tracking_mode = tracking_mode.lower()
+        self.tbd_backend = tbd_backend.lower()
+        if self.tracking_mode not in {"e2e", "tbd"}:
+            raise ValueError(
+                f"Unsupported tracking_mode={tracking_mode!r}. "
+                "Expected 'e2e' or 'tbd'."
+            )
+
+        self.TBD = self.tracking_mode == "tbd"
+        self.OCsort = self.TBD and self.tbd_backend == "ocsort"
+        self.Hybridsort = self.TBD and self.tbd_backend == "hybridsort"
+        self.ByteTrack = self.TBD and self.tbd_backend == "bytetrack"
+        if self.TBD and not self.Hybridsort:
+            raise NotImplementedError(
+                f"TBD backend '{self.tbd_backend}' is not wired for JRDB v1. "
+                "Only 'hybridsort' is supported right now."
+            )
         
         if self.TBD:
-            if self.OCsort:
-                self.instance_handler = TrackHandler(self)
-            else:
-                self.instance_handler = TrackHandler(self)
+            self.instance_handler = TrackHandler(self)
         else:
-                self.instance_handler = QueryHandler(self)
+            self.instance_handler = QueryHandler(self)
 
 
     def init_weight(self):
@@ -698,4 +718,3 @@ class InstanceBackOMNIDETR(nn.Module):
     def query_handler(self, bbox, score, meta, qt=None):
         return self.instance_handler.query_handler(bbox, score, meta, qt)
         
-

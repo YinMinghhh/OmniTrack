@@ -33,7 +33,7 @@ class TrackHandler:
         self.instance_bank.init_thresh = 0.55
 
         # self.tracker = OCSort(det_thresh=0.6, iou_threshold=0.15, use_byte=True)
-        args = make_parser().parse_args()
+        args = make_parser().parse_args([])
         self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
                                     iou_threshold=args.iou_thresh,
                                     asso_func=args.asso,
@@ -84,7 +84,7 @@ class TrackHandler:
 
         count = 0
         if self.timestamp is None or abs(self.timestamp - meta['timestamp']) >100:
-            args = make_parser().parse_args()
+            args = make_parser().parse_args([])
             self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
                                             iou_threshold=args.iou_thresh,
                                             asso_func=args.asso,
