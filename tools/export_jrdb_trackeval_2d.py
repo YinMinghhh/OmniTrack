@@ -87,10 +87,23 @@ def safe_track_id(value):
         return -1
     if isinstance(value, int):
         return value
+    if isinstance(value, float):
+        if math.isnan(value) or not value.is_integer():
+            return -1
+        return int(value)
     try:
-        return int(str(value))
+        text = str(value).strip()
+        if not text:
+            return -1
+        return int(text)
     except ValueError:
-        return -1
+        try:
+            numeric = float(str(value).strip())
+        except ValueError:
+            return -1
+        if math.isnan(numeric) or not numeric.is_integer():
+            return -1
+        return int(numeric)
 
 
 def read_json(path):
