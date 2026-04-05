@@ -22,3 +22,6 @@ gen_file.sh
 test.py
 projects/configs/JRDB_sparse4dv3_temporal_r50_1x8_bs6_*.py
 
+# local TrackEval artifacts
+jrdb_toolkit/tracking_eval/TrackEval/data/gt/jrdb/jrdb_2d_box_val/
+jrdb_toolkit/tracking_eval/TrackEval/data/trackers/jrdb/jrdb_2d_box_val/
