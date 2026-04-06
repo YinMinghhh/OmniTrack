@@ -184,7 +184,7 @@ test_pipeline = [
             "image_wh",
             "ori_shape",
         ],
-        meta_keys=["timestamp"],
+        meta_keys=["timestamp", "sample_idx"],
     ),
 ]
 

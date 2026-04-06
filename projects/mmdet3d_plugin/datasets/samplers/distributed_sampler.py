@@ -68,15 +68,30 @@ class DistributedSampler(_DistributedSampler):
             else:
                 sequence_splits[-1].append(i)
 
-        indices = []
-        perfix_sum = 0
-        split_length = len(self.dataset) // self.num_replicas
-        for i in range(len(sequence_splits)):
-            if perfix_sum >= (self.rank + 1) * split_length:
-                break
-            elif perfix_sum >= self.rank * split_length:
-                indices.extend(sequence_splits[i])
-            perfix_sum += len(sequence_splits[i])
+        target_lengths = [
+            len(self.dataset) // self.num_replicas for _ in range(self.num_replicas)
+        ]
+        for i in range(len(self.dataset) % self.num_replicas):
+            target_lengths[i] += 1
+
+        indices_per_rank = [[] for _ in range(self.num_replicas)]
+        rank = 0
+        current_length = 0
+
+        for split in sequence_splits:
+            split_length = len(split)
+            if rank < self.num_replicas - 1 and current_length > 0:
+                current_target = target_lengths[rank]
+                keep_cost = abs((current_length + split_length) - current_target)
+                move_cost = abs(current_length - current_target)
+                if keep_cost > move_cost:
+                    rank += 1
+                    current_length = 0
+
+            indices_per_rank[rank].extend(split)
+            current_length += split_length
+
+        indices = indices_per_rank[self.rank]
 
         self.num_samples = len(indices)
         return iter(indices)
