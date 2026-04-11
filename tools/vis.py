@@ -19,12 +19,16 @@ class Visualizer(object):
         self.save_dr = save_dr
         self.bbox = None
 
-    def draw_bbox(self, img, bboxes, color=(0, 255, 0), thickness=2, ltwh=False, track_id=None, score=None, qt=False):
+    @staticmethod
+    def _boxes_to_xyxy(bboxes, ltwh=False):
+        if not ltwh:
+            return bboxes
 
-        if ltwh:
-            bboxes = [[bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]] for bbox in bboxes]
-            bboxes = [[bbox[0]+(bbox[2]-bbox[0])/2, bbox[1]+(bbox[3]-bbox[1])/2, bbox[2]+(bbox[2]-bbox[0])/2, bbox[3]+(bbox[3]-bbox[1])/2] for bbox in bboxes]
-            
+        # `ltwh=True` means boxes are [x, y, w, h] in top-left semantics.
+        return [[bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]] for bbox in bboxes]
+
+    def draw_bbox(self, img, bboxes, color=(0, 255, 0), thickness=2, ltwh=False, track_id=None, score=None, qt=False):
+        bboxes = self._boxes_to_xyxy(bboxes, ltwh=ltwh)
 
         for idx, bbox in enumerate(bboxes):
             if track_id[idx] != "None" :
