@@ -5,6 +5,7 @@ import pickle
 from torch import nn
 import numpy as np
 from .ops import xywh2xyxy,xyxy2xywh
+from .active_track_utils import collect_active_track_data
 from .seam_duplicate_resolver import resolve_seam_duplicates_xyxy
 from ..track.strack import STrack
 from ..track.kalman_filter import KalmanFilter
@@ -61,34 +62,38 @@ class TrackHandler:
 
     def _get_active_track_boxes(self, device, dtype):
         if not hasattr(self.tracker, "trackers"):
-            return None
+            return None, None
 
-        active_boxes = []
-        for track in self.tracker.trackers:
-            last_observation = getattr(track, "last_observation", None)
-            if last_observation is not None:
-                last_observation = np.asarray(last_observation, dtype=np.float32)
-                if (
-                    last_observation.shape[0] >= 4
-                    and np.all(last_observation[:4] >= 0)
-                    and last_observation[2] > last_observation[0]
-                    and last_observation[3] > last_observation[1]
-                ):
-                    active_boxes.append(last_observation[:4])
-                    continue
+        seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
+        active_track_data = collect_active_track_data(
+            self.tracker.trackers,
+            max_time_since_update=seam_cfg.get(
+                "active_track_max_time_since_update"
+            ),
+        )
 
-            state = np.asarray(track.get_state(), dtype=np.float32).reshape(-1)
-            if (
-                state.shape[0] >= 4
-                and state[2] > state[0]
-                and state[3] > state[1]
-            ):
-                active_boxes.append(state[:4])
+        active_boxes = active_track_data["boxes"]
+        active_track_boxes = None
+        if active_boxes is not None:
+            active_track_boxes = torch.as_tensor(
+                active_boxes,
+                device=device,
+                dtype=dtype,
+            )
 
-        if not active_boxes:
-            return None
-        active_boxes = np.asarray(active_boxes, dtype=np.float32)
-        return torch.as_tensor(active_boxes, device=device, dtype=dtype)
+        debug_payload = None
+        if seam_cfg.get("debug_stats", False):
+            debug_payload = {
+                "active_track_max_time_since_update": seam_cfg.get(
+                    "active_track_max_time_since_update"
+                ),
+                "retained_count": int(len(active_track_data["retained"])),
+                "dropped_count": int(len(active_track_data["dropped"])),
+                "retained": active_track_data["retained"],
+                "dropped": active_track_data["dropped"],
+            }
+
+        return active_track_boxes, debug_payload
 
     def query_handler(self, bbox, score, meta, qt):
         self.img_wh = meta['image_wh'][0][0].cpu().numpy()
@@ -109,7 +114,7 @@ class TrackHandler:
                 labels = torch.zeros(
                     bbox.shape[0], device=bbox.device, dtype=torch.long
                 )
-                active_tracks = self._get_active_track_boxes(
+                active_tracks, active_track_debug = self._get_active_track_boxes(
                     device=bbox.device,
                     dtype=bbox.dtype,
                 )
@@ -122,6 +127,13 @@ class TrackHandler:
                     qualities=qt,
                     active_tracks=active_tracks,
                 )
+                if active_track_debug is not None:
+                    self.seam_resolver_last_stats = dict(
+                        self.seam_resolver_last_stats
+                    )
+                    self.seam_resolver_last_stats[
+                        "active_track_debug"
+                    ] = active_track_debug
             else:
                 cx = (bbox[:,0] + bbox[:,2])/2
                 mask = cx < meta['ori_shape'][1]

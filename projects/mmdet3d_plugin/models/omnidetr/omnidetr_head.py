@@ -459,7 +459,12 @@ class OmniETRDecoder(nn.Module):
                 "det_scores_2d": det_scores, 
                 }
             )
+            seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
+            if seam_cfg.get("debug_stats", False):
+                results[-1]["seam_resolver_stats"] = dict(
+                    getattr(self.instance_bank, "seam_resolver_last_stats", {})
+                )
 
-                
+
 
         return results

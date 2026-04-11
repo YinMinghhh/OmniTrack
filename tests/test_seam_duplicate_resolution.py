@@ -23,6 +23,7 @@ class SeamDuplicateResolverTest(unittest.TestCase):
             seam_band_px=400,
             match_iou=0.5,
             track_compat_iou=0.7,
+            active_track_max_time_since_update=None,
             class_strict=True,
             fuse_method="score_weighted_box_max_score",
             debug_stats=True,

@@ -7,6 +7,7 @@ DEFAULT_SEAM_RESOLVER_CFG = dict(
     seam_band_px=400,
     match_iou=0.5,
     track_compat_iou=0.7,
+    active_track_max_time_since_update=None,
     class_strict=True,
     fuse_method="score_weighted_box_max_score",
     debug_stats=False,
@@ -27,6 +28,11 @@ def normalize_seam_resolver_cfg(cfg=None):
         raise ValueError(
             f"Unsupported seam resolver fuse_method={resolved['fuse_method']!r}. "
             "Only 'score_weighted_box_max_score' is implemented in v1."
+        )
+    max_time_since_update = resolved.get("active_track_max_time_since_update")
+    if max_time_since_update is not None and max_time_since_update < 0:
+        raise ValueError(
+            "active_track_max_time_since_update must be None or >= 0."
         )
     return resolved
 
@@ -186,6 +192,7 @@ def _best_track_assignments(
     image_width,
     track_compat_iou,
     active_track_group_iou,
+    return_debug=False,
 ):
     if (
         active_tracks is None
@@ -193,6 +200,13 @@ def _best_track_assignments(
         or track_compat_iou is None
         or track_compat_iou <= 0
     ):
+        if return_debug:
+            return None, {
+                "active_track_group_ids": None,
+                "best_track_indices": None,
+                "best_track_ious": None,
+                "best_track_group_assignments": None,
+            }
         return None
 
     active_group_ids = _active_track_group_ids(
@@ -205,6 +219,13 @@ def _best_track_assignments(
     best_group_idx = active_group_ids[best_idx.to(dtype=torch.long)]
     invalid = best_iou < track_compat_iou
     best_group_idx[invalid] = -1
+    if return_debug:
+        return best_group_idx, {
+            "active_track_group_ids": active_group_ids.detach().cpu().tolist(),
+            "best_track_indices": best_idx.detach().cpu().tolist(),
+            "best_track_ious": best_iou.detach().cpu().tolist(),
+            "best_track_group_assignments": best_group_idx.detach().cpu().tolist(),
+        }
     return best_group_idx
 
 
@@ -316,13 +337,24 @@ def resolve_seam_duplicates_xyxy(
     seam_qualities = qualities[seam_indices] if qualities is not None else None
 
     pairwise_iou = wrap_iou_matrix(seam_boxes, seam_boxes, float(image_width))
-    track_assignments = _best_track_assignments(
-        seam_boxes,
-        active_tracks,
-        float(image_width),
-        float(cfg["track_compat_iou"]),
-        _active_track_group_iou_threshold(cfg["match_iou"]),
-    )
+    if cfg["debug_stats"]:
+        track_assignments, track_debug = _best_track_assignments(
+            seam_boxes,
+            active_tracks,
+            float(image_width),
+            float(cfg["track_compat_iou"]),
+            _active_track_group_iou_threshold(cfg["match_iou"]),
+            return_debug=True,
+        )
+    else:
+        track_assignments = _best_track_assignments(
+            seam_boxes,
+            active_tracks,
+            float(image_width),
+            float(cfg["track_compat_iou"]),
+            _active_track_group_iou_threshold(cfg["match_iou"]),
+        )
+        track_debug = None
 
     parents = list(range(seam_boxes.shape[0]))
 
@@ -422,6 +454,32 @@ def resolve_seam_duplicates_xyxy(
         "equivalence_classes": int(len(groups)),
         "merged_candidates": int(seam_indices.numel() - len(groups)),
     }
+    if cfg["debug_stats"]:
+        stats.update(
+            {
+                "image_width": float(image_width),
+                "seam_band_px": float(cfg["seam_band_px"]),
+                "match_iou": float(cfg["match_iou"]),
+                "track_compat_iou": float(cfg["track_compat_iou"]),
+                "class_strict": bool(cfg["class_strict"]),
+                "seam_indices": seam_indices.detach().cpu().tolist(),
+                "non_seam_indices": non_seam_indices.detach().cpu().tolist(),
+                "seam_boxes": seam_boxes.detach().cpu().tolist(),
+                "seam_scores": seam_scores.detach().cpu().tolist(),
+                "seam_labels": seam_labels.detach().cpu().tolist(),
+                "pairwise_wrap_iou": pairwise_iou.detach().cpu().tolist(),
+                "groups": [
+                    {
+                        "local_indices": [int(idx) for idx in group],
+                        "global_indices": [
+                            int(seam_indices[idx].item()) for idx in group
+                        ],
+                    }
+                    for group in groups.values()
+                ],
+                "track_debug": track_debug,
+            }
+        )
     return out_boxes, out_scores, out_labels, out_qualities, stats
 
 
