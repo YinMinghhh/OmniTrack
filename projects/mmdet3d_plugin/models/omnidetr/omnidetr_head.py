@@ -13,6 +13,7 @@ from .transformer import MLP, DeformableTransformerDecoder, DeformableTransforme
 
 from .utils import bias_init_with_prob, linear_init
 from .ops import convert_torch2numpy_batch, xywh2xyxy
+from .seam_duplicate_resolver import resolve_seam_duplicates_xyxy
 import projects.mmdet3d_plugin.models.trackers.byte_tracker.byte_tracker as byte_tracker
 
 from mmdet.models import (
@@ -355,36 +356,48 @@ class OmniETRDecoder(nn.Module):
                 idx = max_score.squeeze(-1) > self.post_conf  # (300, )
                 # if self.classes is not None:
                 #     idx = (cls == torch.tensor(self.classes, device=cls.device)).any(1) & idx
-                pred = torch.cat([bbox, max_score, cls], dim=-1)[idx]  # filter
-                score = score[idx]
-                cls = cls[idx]
+                pred = bbox[idx]
+                score = max_score[idx].reshape(-1)
+                cls = cls[idx].reshape(-1)
                 ow, oh = metas['image_wh'][i][0]
                 # ori_w = metas['ori_shape'][1]
                 # extend = ow - ori_w
                 
                 pred[..., [0, 2]] *= ow
                 pred[..., [1, 3]] *= oh
-                # to w h
-                pred[..., [2, 3]] -= pred[..., [0, 1]]
                 # results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))
-                qt = quality[i][idx] if quality is not None else None
+                qt = quality[i][idx].reshape(-1) if quality is not None else None
 
                 # mask box over right border
                 if ow-metas['ori_shape'][1] > 0 :
-                    cx = pred[:,0] + pred[:,2]/2
-                    mask = cx < metas['ori_shape'][1]
-                    pred = pred[mask]
-                    score = score[mask]
-                    cls = cls[mask]
-                    qt = qt[mask] if qt is not None else None
-                results.append(
-                        {
-                    "boxes_2d": pred[:,:4].cpu(), # cx,cy w, h
+                    seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
+                    if seam_cfg.get("enabled", False):
+                        pred, score, cls, qt, self.instance_bank.seam_resolver_last_stats = resolve_seam_duplicates_xyxy(
+                            pred,
+                            score,
+                            cls,
+                            image_width=float(metas['ori_shape'][1]),
+                            seam_resolver_cfg=seam_cfg,
+                            qualities=qt,
+                            active_tracks=None,
+                        )
+                    else:
+                        cx = (pred[:,0] + pred[:,2]) / 2
+                        mask = cx < metas['ori_shape'][1]
+                        pred = pred[mask]
+                        score = score[mask]
+                        cls = cls[mask]
+                        qt = qt[mask] if qt is not None else None
+
+                pred[..., [2, 3]] -= pred[..., [0, 1]]
+                result = {
+                    "boxes_2d": pred[:,:4].cpu(), # x1, y1, w, h
                     "scores_2d": score.cpu(), 
                     "labels_2d": cls.cpu(),
-                    "quality": qt.cpu(),
-                    }
-                )
+                }
+                if qt is not None:
+                    result["quality"] = qt.cpu()
+                results.append(result)
             
         if hasattr(self.instance_bank, "query_handler") and self.is_track:
             online_targets, dets = self.instance_bank.query_handler(bboxes, scores, metas, quality)

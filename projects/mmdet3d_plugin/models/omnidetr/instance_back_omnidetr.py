@@ -14,6 +14,7 @@ from ..track.kalman_filter import KalmanFilter
 from ..track.matching import iou_distance, iou_score
 from .query_handler_module import QueryHandler
 from .track_handler_module import TrackHandler
+from .seam_duplicate_resolver import normalize_seam_resolver_cfg
 
 __all__ = ["InstanceBackOMNIDETR"]
 
@@ -53,6 +54,7 @@ class InstanceBackOMNIDETR(nn.Module):
         e2e_handler_cfg=None,
         tbd_handler_cfg=None,
         tbd_tracker_cfg=None,
+        seam_resolver_cfg=None,
     ):
         super(InstanceBackOMNIDETR, self).__init__()
         self.embed_dims = embed_dims
@@ -99,6 +101,8 @@ class InstanceBackOMNIDETR(nn.Module):
         self.e2e_handler_cfg = dict(e2e_handler_cfg or {})
         self.tbd_handler_cfg = dict(tbd_handler_cfg or {})
         self.tbd_tracker_cfg = dict(tbd_tracker_cfg or {})
+        self.seam_resolver_cfg = normalize_seam_resolver_cfg(seam_resolver_cfg)
+        self.seam_resolver_last_stats = {}
 
         # tracking variables
         self.lost_stracks = []

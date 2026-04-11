@@ -5,6 +5,7 @@ import pickle
 from torch import nn
 import numpy as np
 from .ops import xywh2xyxy,xyxy2xywh
+from .seam_duplicate_resolver import resolve_seam_duplicates_xyxy
 from ..track.strack import STrack
 from ..track.kalman_filter import KalmanFilter
 from ..track.matching import iou_distance, iou_score
@@ -58,12 +59,44 @@ class TrackHandler:
         else:
             super().__setattr__(name, value)
 
+    def _get_active_track_boxes(self, device, dtype):
+        if not hasattr(self.tracker, "trackers"):
+            return None
+
+        active_boxes = []
+        for track in self.tracker.trackers:
+            last_observation = getattr(track, "last_observation", None)
+            if last_observation is not None:
+                last_observation = np.asarray(last_observation, dtype=np.float32)
+                if (
+                    last_observation.shape[0] >= 4
+                    and np.all(last_observation[:4] >= 0)
+                    and last_observation[2] > last_observation[0]
+                    and last_observation[3] > last_observation[1]
+                ):
+                    active_boxes.append(last_observation[:4])
+                    continue
+
+            state = np.asarray(track.get_state(), dtype=np.float32).reshape(-1)
+            if (
+                state.shape[0] >= 4
+                and state[2] > state[0]
+                and state[3] > state[1]
+            ):
+                active_boxes.append(state[:4])
+
+        if not active_boxes:
+            return None
+        active_boxes = np.asarray(active_boxes, dtype=np.float32)
+        return torch.as_tensor(active_boxes, device=device, dtype=dtype)
+
     def query_handler(self, bbox, score, meta, qt):
         self.img_wh = meta['image_wh'][0][0].cpu().numpy()
         self.ori_shape = np.array([meta['ori_shape'][1][0].cpu().numpy(), meta['ori_shape'][0][0].cpu().numpy()])
         scale_w = self.ori_shape[0] / self.img_wh[0]
         mask = score > self.det_thresh
         bbox = bbox[mask.squeeze(-1)]
+        qt = qt[mask.squeeze(-1)] if qt is not None else None
         bbox = STrack.cxcywh_to_tlbr_to_tensor(bbox)
         bbox[:,[0,2]] *= self.img_wh[0]
         bbox[:,[1,3]] *= self.img_wh[1]
@@ -71,11 +104,37 @@ class TrackHandler:
         bbox = bbox.to(dtype=torch.int, device=bbox.device)
         bbox = bbox.to(dtype=torch.float32, device=bbox.device)
         if meta['image_wh'][0][0][0]-meta['ori_shape'][1] > 0 :
-            cx = (bbox[:,0] + bbox[:,2])/2
-            mask = cx < meta['ori_shape'][1]
-            bbox = bbox[mask]
-            score = score[mask]
-   
+            seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
+            if seam_cfg.get("enabled", False):
+                labels = torch.zeros(
+                    bbox.shape[0], device=bbox.device, dtype=torch.long
+                )
+                active_tracks = self._get_active_track_boxes(
+                    device=bbox.device,
+                    dtype=bbox.dtype,
+                )
+                bbox, score, _, qt, self.seam_resolver_last_stats = resolve_seam_duplicates_xyxy(
+                    bbox,
+                    score,
+                    labels,
+                    image_width=float(meta['ori_shape'][1]),
+                    seam_resolver_cfg=seam_cfg,
+                    qualities=qt,
+                    active_tracks=active_tracks,
+                )
+            else:
+                cx = (bbox[:,0] + bbox[:,2])/2
+                mask = cx < meta['ori_shape'][1]
+                bbox = bbox[mask]
+                score = score[mask]
+                qt = qt[mask] if qt is not None else None
+                self.seam_resolver_last_stats = {
+                    "enabled": False,
+                    "legacy_hard_crop": True,
+                    "input_count": int(mask.shape[0]),
+                    "output_count": int(mask.sum().item()),
+                }
+
         keep_indices = nms(bbox, score, iou_threshold=0.35)
         bbox = bbox[keep_indices]
         score = score[keep_indices]
