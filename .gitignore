@@ -27,6 +27,14 @@ results_jrdb2d.json
 gen_file.sh
 test.py
 projects/configs/JRDB_sparse4dv3_temporal_r50_1x8_bs6_*.py
+evaluation_workspace/
+evaluation_workspace_tbd_hybridsort/
+.idea/
+logs/
+paper/
+docs/baseline_reporting/
+docs/work_plans/
+tools/baseline_reporting/
 
 # local TrackEval artifacts
 jrdb_toolkit/tracking_eval/TrackEval/data/gt/jrdb/jrdb_2d_box_val/
@@ -34,5 +42,6 @@ jrdb_toolkit/tracking_eval/TrackEval/data/trackers/jrdb/jrdb_2d_box_val/
 
 # local Codex/runtime files
 _shared_assets/
+.codex
 .codex/
 tmp/
