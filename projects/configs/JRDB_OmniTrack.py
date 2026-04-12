@@ -123,6 +123,12 @@ model = dict(
             num_temp_instances=600 if temporal else -1,
             confidence_decay=0.6,
             feat_grad=False,
+            tbd_handler_cfg=dict(
+                pre_tracker_quantize_boxes=False,
+            ),
+            tbd_tracker_cfg=dict(
+                use_circular_track=False,
+            ),
             seam_resolver_cfg=dict(
                 enabled=True,
                 geometry="wrap_xyxy",

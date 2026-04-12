@@ -61,6 +61,7 @@ def make_parser():
     parser.add_argument("--TCM_first_step_weight", type=float, default=1.0, help="TCM first step weight")
     parser.add_argument("--TCM_byte_step_weight", type=float, default=1.0, help="TCM second step weight")
     parser.add_argument("--hybrid_sort_with_reid", default=False, action="store_true", help="use ReID model for Hybrid SORT.")
+    parser.add_argument("--use_circular_track", default=False, action="store_true", help="use circular-x geometry for Hybrid SORT association.")
 
     # for fast reid
     parser.add_argument("--EG_weight_high_score", default=0.0, type=float, help="weight of appearance cost matrix when using EG")

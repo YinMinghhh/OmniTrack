@@ -1,5 +1,27 @@
 import torch
 
+try:
+    from ..trackers.hybrid_sort_tracker.circular_utils import (
+        unwrap_to_track,
+        wrap_metric_batch,
+    )
+except ImportError:
+    import importlib.util
+    import pathlib
+
+    _CIRCULAR_UTILS_PATH = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "trackers/hybrid_sort_tracker/circular_utils.py"
+    )
+    _CIRCULAR_UTILS_SPEC = importlib.util.spec_from_file_location(
+        "hybrid_sort_circular_utils",
+        _CIRCULAR_UTILS_PATH,
+    )
+    _CIRCULAR_UTILS = importlib.util.module_from_spec(_CIRCULAR_UTILS_SPEC)
+    _CIRCULAR_UTILS_SPEC.loader.exec_module(_CIRCULAR_UTILS)
+    unwrap_to_track = _CIRCULAR_UTILS.unwrap_to_track
+    wrap_metric_batch = _CIRCULAR_UTILS.wrap_metric_batch
+
 
 DEFAULT_SEAM_RESOLVER_CFG = dict(
     enabled=True,
@@ -94,15 +116,12 @@ def wrap_iou_matrix(boxes1, boxes2, image_width):
     boxes2 = _as_boxes_tensor(boxes2, device=boxes1.device, dtype=boxes1.dtype)
     if boxes1.numel() == 0 or boxes2.numel() == 0:
         return boxes1.new_zeros((boxes1.shape[0], boxes2.shape[0]))
-
-    shifts = boxes1.new_tensor((-float(image_width), 0.0, float(image_width)))
-    best = None
-    for shift in shifts:
-        shifted = boxes2.clone()
-        shifted[:, [0, 2]] += shift
-        current = _box_iou_xyxy(boxes1, shifted)
-        best = current if best is None else torch.maximum(best, current)
-    return best
+    return wrap_metric_batch(
+        _box_iou_xyxy,
+        boxes1,
+        boxes2,
+        float(image_width),
+    )
 
 
 def wrap_iou(box_a, box_b, image_width):
@@ -230,11 +249,12 @@ def _best_track_assignments(
 
 
 def _best_aligned_box(box, reference, image_width):
-    candidates = box.repeat(3, 1)
-    shifts = box.new_tensor((-float(image_width), 0.0, float(image_width)))
-    candidates[:, [0, 2]] += shifts[:, None]
-    ious = _box_iou_xyxy(reference.unsqueeze(0), candidates).reshape(-1)
-    return candidates[int(torch.argmax(ious).item())]
+    aligned = unwrap_to_track(
+        box.reshape(-1),
+        reference.reshape(-1),
+        float(image_width),
+    )
+    return aligned.reshape(-1)
 
 
 def resolve_seam_duplicates_xyxy(

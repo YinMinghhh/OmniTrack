@@ -20,14 +20,19 @@ class DummyTrack:
         time_since_update,
         last_observation,
         state_box,
+        visible_state_box=None,
     ):
         self.track_id = track_id
         self.time_since_update = time_since_update
         self.last_observation = last_observation
         self._state_box = state_box
+        self._visible_state_box = visible_state_box if visible_state_box is not None else state_box
 
     def get_state(self):
         return self._state_box
+
+    def get_visible_state(self):
+        return self._visible_state_box
 
 
 class ActiveTrackUtilsTest(unittest.TestCase):
@@ -69,7 +74,8 @@ class ActiveTrackUtilsTest(unittest.TestCase):
                 track_id=22,
                 time_since_update=0,
                 last_observation=[1.0, 1.0, 1.0, 10.0],
-                state_box=[3730.0, 12.0, 3830.0, 108.0],
+                state_box=[-30.0, 12.0, 70.0, 108.0],
+                visible_state_box=[3730.0, 12.0, 3830.0, 108.0],
             ),
         ]
 

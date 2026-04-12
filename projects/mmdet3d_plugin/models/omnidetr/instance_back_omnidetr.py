@@ -615,7 +615,11 @@ class InstanceBackOMNIDETR(nn.Module):
                 dn_cls_embed = class_embed[cls]
                 bs = 1
             elif self.OCsort:
-                query = np.array([t.get_state()[0] for t in self.starcks if t.time_since_update < 1])
+                query = np.array([
+                    (t.get_visible_state()[0] if hasattr(t, "get_visible_state") else t.get_state()[0])
+                    for t in self.starcks
+                    if t.time_since_update < 1
+                ])
                 if len(query)==0:
                     return None, None, atten_mask, dn_meta
                 query = STrack.tlwh_to_cxcywh(STrack.tlbr_to_tlwh_muti(query))
@@ -627,7 +631,11 @@ class InstanceBackOMNIDETR(nn.Module):
                 bs = 1
 
             elif self.Hybridsort:
-                query = np.array([t.get_state()[0] for t in self.starcks if t.time_since_update < 1])
+                query = np.array([
+                    (t.get_visible_state()[0] if hasattr(t, "get_visible_state") else t.get_state()[0])
+                    for t in self.starcks
+                    if t.time_since_update < 1
+                ])
                 if len(query)==0:
                     return None, None, atten_mask, dn_meta
                 query = STrack.tlwh_to_cxcywh(STrack.tlbr_to_tlwh_muti(query[:, :4]))

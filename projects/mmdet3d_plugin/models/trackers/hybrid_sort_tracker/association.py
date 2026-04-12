@@ -1,5 +1,10 @@
 import os
 import numpy as np
+from .circular_utils import (
+    circ_dx,
+    pairwise_iou_matrix,
+    wrap_iou_batch,
+)
 
 def intersection_batch(bboxes1, bboxes2):
     bboxes2 = np.expand_dims(bboxes2, 0)
@@ -22,19 +27,11 @@ def iou_batch(bboxes1, bboxes2):
     """
     From SORT: Computes IOU between two bboxes in the form [x1,y1,x2,y2]
     """
-    bboxes2 = np.expand_dims(bboxes2, 0)
-    bboxes1 = np.expand_dims(bboxes1, 1)
-    
-    xx1 = np.maximum(bboxes1[..., 0], bboxes2[..., 0])
-    yy1 = np.maximum(bboxes1[..., 1], bboxes2[..., 1])
-    xx2 = np.minimum(bboxes1[..., 2], bboxes2[..., 2])
-    yy2 = np.minimum(bboxes1[..., 3], bboxes2[..., 3])
-    w = np.maximum(0., xx2 - xx1)
-    h = np.maximum(0., yy2 - yy1)
-    wh = w * h
-    o = wh / ((bboxes1[..., 2] - bboxes1[..., 0]) * (bboxes1[..., 3] - bboxes1[..., 1])                                      
-        + (bboxes2[..., 2] - bboxes2[..., 0]) * (bboxes2[..., 3] - bboxes2[..., 1]) - wh)                                              
-    return(o)
+    return pairwise_iou_matrix(bboxes1, bboxes2)
+
+
+def wrap_iou_batch_safe(bboxes1, bboxes2, image_width):
+    return wrap_iou_batch(bboxes1, bboxes2, image_width)
 
 
 def cal_score_dif_batch(bboxes1, bboxes2):
@@ -287,6 +284,18 @@ def speed_direction_batch(dets, tracks):
     return dy, dx # size: num_track x num_det
 
 
+def speed_direction_batch_circular(dets, tracks, image_width):
+    tracks = tracks[..., np.newaxis]
+    CX1, CY1 = (dets[:,0] + dets[:,2])/2.0, (dets[:,1]+dets[:,3])/2.0
+    CX2, CY2 = (tracks[:,0] + tracks[:,2]) /2.0, (tracks[:,1]+tracks[:,3])/2.0
+    dx = circ_dx(CX1, CX2, image_width)
+    dy = CY1 - CY2
+    norm = np.sqrt(dx**2 + dy**2) + 1e-6
+    dx = dx / norm
+    dy = dy / norm
+    return dy, dx
+
+
 def linear_assignment(cost_matrix, thresh=0.):
     try:        # [hgx0411] goes here!
         import lap
@@ -438,6 +447,18 @@ def speed_direction_batch_lt(dets, tracks):
     dy = dy / norm
     return dy, dx # size: num_track x num_det
 
+
+def speed_direction_batch_lt_circular(dets, tracks, image_width):
+    tracks = tracks[..., np.newaxis]
+    CX1, CY1 = dets[:,0], dets[:,1]
+    CX2, CY2 = tracks[:,0], tracks[:,1]
+    dx = circ_dx(CX1, CX2, image_width)
+    dy = CY1 - CY2
+    norm = np.sqrt(dx**2 + dy**2) + 1e-6
+    dx = dx / norm
+    dy = dy / norm
+    return dy, dx
+
 def speed_direction_batch_rt(dets, tracks):
     tracks = tracks[..., np.newaxis]
     CX1, CY1 = dets[:,0], dets[:,3]
@@ -448,6 +469,18 @@ def speed_direction_batch_rt(dets, tracks):
     dx = dx / norm
     dy = dy / norm
     return dy, dx # size: num_track x num_det
+
+
+def speed_direction_batch_rt_circular(dets, tracks, image_width):
+    tracks = tracks[..., np.newaxis]
+    CX1, CY1 = dets[:,0], dets[:,3]
+    CX2, CY2 = tracks[:,0], tracks[:,3]
+    dx = circ_dx(CX1, CX2, image_width)
+    dy = CY1 - CY2
+    norm = np.sqrt(dx**2 + dy**2) + 1e-6
+    dx = dx / norm
+    dy = dy / norm
+    return dy, dx
 
 def speed_direction_batch_lb(dets, tracks):
     tracks = tracks[..., np.newaxis]
@@ -460,6 +493,18 @@ def speed_direction_batch_lb(dets, tracks):
     dy = dy / norm
     return dy, dx # size: num_track x num_det
 
+
+def speed_direction_batch_lb_circular(dets, tracks, image_width):
+    tracks = tracks[..., np.newaxis]
+    CX1, CY1 = dets[:,2], dets[:,1]
+    CX2, CY2 = tracks[:,2], tracks[:,1]
+    dx = circ_dx(CX1, CX2, image_width)
+    dy = CY1 - CY2
+    norm = np.sqrt(dx**2 + dy**2) + 1e-6
+    dx = dx / norm
+    dy = dy / norm
+    return dy, dx
+
 def speed_direction_batch_rb(dets, tracks):
     tracks = tracks[..., np.newaxis]
     CX1, CY1 = dets[:,2], dets[:,3]
@@ -470,6 +515,18 @@ def speed_direction_batch_rb(dets, tracks):
     dx = dx / norm
     dy = dy / norm
     return dy, dx # size: num_track x num_det
+
+
+def speed_direction_batch_rb_circular(dets, tracks, image_width):
+    tracks = tracks[..., np.newaxis]
+    CX1, CY1 = dets[:,2], dets[:,3]
+    CX2, CY2 = tracks[:,2], tracks[:,3]
+    dx = circ_dx(CX1, CX2, image_width)
+    dy = CY1 - CY2
+    norm = np.sqrt(dx**2 + dy**2) + 1e-6
+    dx = dx / norm
+    dy = dy / norm
+    return dy, dx
 
 def associate_4_points(detections, trackers, iou_threshold, lt, rt, lb, rb, previous_obs, vdc_weight, iou_type=None, args=None):
     if (len(trackers) == 0):
@@ -568,6 +625,132 @@ def associate_4_points_with_score(detections, trackers, iou_threshold, lt, rt, l
         else:
             matches.append(m.reshape(1, 2))
     if (len(matches) == 0):
+        matches = np.empty((0, 2), dtype=int)
+    else:
+        matches = np.concatenate(matches, axis=0)
+
+    return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
+
+
+def associate_4_points_circular(
+    detections,
+    trackers,
+    iou_threshold,
+    lt,
+    rt,
+    lb,
+    rb,
+    previous_obs,
+    vdc_weight,
+    image_width,
+    iou_type=None,
+    args=None,
+):
+    if len(trackers) == 0:
+        return np.empty((0, 2), dtype=int), np.arange(len(detections)), np.empty((0, 5), dtype=int)
+
+    Y1, X1 = speed_direction_batch_lt_circular(detections, previous_obs, image_width)
+    Y2, X2 = speed_direction_batch_rt_circular(detections, previous_obs, image_width)
+    Y3, X3 = speed_direction_batch_lb_circular(detections, previous_obs, image_width)
+    Y4, X4 = speed_direction_batch_rb_circular(detections, previous_obs, image_width)
+    cost_lt = cost_vel(Y1, X1, trackers, lt, detections, previous_obs, vdc_weight)
+    cost_rt = cost_vel(Y2, X2, trackers, rt, detections, previous_obs, vdc_weight)
+    cost_lb = cost_vel(Y3, X3, trackers, lb, detections, previous_obs, vdc_weight)
+    cost_rb = cost_vel(Y4, X4, trackers, rb, detections, previous_obs, vdc_weight)
+
+    iou_matrix = wrap_iou_batch_safe(detections, trackers, image_width) if iou_type is None else iou_type(detections, trackers)
+    angle_diff_cost = cost_lt + cost_rt + cost_lb + cost_rb
+
+    if min(iou_matrix.shape) > 0:
+        a = (iou_matrix > iou_threshold).astype(np.int32)
+        if a.sum(1).max() == 1 and a.sum(0).max() == 1:
+            matched_indices = np.stack(np.where(a), axis=1)
+        else:
+            matched_indices = linear_assignment(-(iou_matrix + angle_diff_cost))
+    else:
+        matched_indices = np.empty(shape=(0, 2))
+
+    unmatched_detections = []
+    for d, det in enumerate(detections):
+        if d not in matched_indices[:, 0]:
+            unmatched_detections.append(d)
+    unmatched_trackers = []
+    for t, trk in enumerate(trackers):
+        if t not in matched_indices[:, 1]:
+            unmatched_trackers.append(t)
+
+    matches = []
+    for m in matched_indices:
+        if iou_matrix[m[0], m[1]] < iou_threshold:
+            unmatched_detections.append(m[0])
+            unmatched_trackers.append(m[1])
+        else:
+            matches.append(m.reshape(1, 2))
+    if len(matches) == 0:
+        matches = np.empty((0, 2), dtype=int)
+    else:
+        matches = np.concatenate(matches, axis=0)
+
+    return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
+
+
+def associate_4_points_with_score_circular(
+    detections,
+    trackers,
+    iou_threshold,
+    lt,
+    rt,
+    lb,
+    rb,
+    previous_obs,
+    vdc_weight,
+    image_width,
+    iou_type=None,
+    args=None,
+):
+    if len(trackers) == 0:
+        return np.empty((0, 2), dtype=int), np.arange(len(detections)), np.empty((0, 5), dtype=int)
+
+    Y1, X1 = speed_direction_batch_lt_circular(detections, previous_obs, image_width)
+    Y2, X2 = speed_direction_batch_rt_circular(detections, previous_obs, image_width)
+    Y3, X3 = speed_direction_batch_lb_circular(detections, previous_obs, image_width)
+    Y4, X4 = speed_direction_batch_rb_circular(detections, previous_obs, image_width)
+    cost_lt = cost_vel(Y1, X1, trackers, lt, detections, previous_obs, vdc_weight)
+    cost_rt = cost_vel(Y2, X2, trackers, rt, detections, previous_obs, vdc_weight)
+    cost_lb = cost_vel(Y3, X3, trackers, lb, detections, previous_obs, vdc_weight)
+    cost_rb = cost_vel(Y4, X4, trackers, rb, detections, previous_obs, vdc_weight)
+    iou_matrix = wrap_iou_batch_safe(detections, trackers, image_width) if iou_type is None else iou_type(detections, trackers)
+    score_dif = cal_score_dif_batch(detections, trackers)
+
+    angle_diff_cost = cost_lt + cost_rt + cost_lb + cost_rb
+    angle_diff_cost -= score_dif * args.TCM_first_step_weight
+
+    if min(iou_matrix.shape) > 0:
+        a = (iou_matrix > iou_threshold).astype(np.int32)
+        if a.sum(1).max() == 1 and a.sum(0).max() == 1:
+            matched_indices = np.stack(np.where(a), axis=1)
+        else:
+            matched_indices = linear_assignment(-(iou_matrix + angle_diff_cost))
+    else:
+        matched_indices = np.empty(shape=(0, 2))
+
+    unmatched_detections = []
+    for d, det in enumerate(detections):
+        if d not in matched_indices[:, 0]:
+            unmatched_detections.append(d)
+    unmatched_trackers = []
+    for t, trk in enumerate(trackers):
+        if t not in matched_indices[:, 1]:
+            unmatched_trackers.append(t)
+
+    matches = []
+    for m in matched_indices:
+        if iou_matrix[m[0], m[1]] < iou_threshold:
+            unmatched_detections.append(m[0])
+            unmatched_trackers.append(m[1])
+        else:
+            matches.append(m.reshape(1, 2))
+    if len(matches) == 0:
         matches = np.empty((0, 2), dtype=int)
     else:
         matches = np.concatenate(matches, axis=0)
@@ -776,17 +959,31 @@ def fuse_motion(cost_matrix, tracks, detections, only_position=False, lambda_=0.
     return cost_matrix
 
 # [hgx0411] compute embedding distance and gating, borrowed and modified from FairMOT
-import lap
 def linear_assignment_appearance(cost_matrix, thresh):
     if cost_matrix.size == 0:
         return np.empty((0, 2), dtype=int), tuple(range(cost_matrix.shape[0])), tuple(range(cost_matrix.shape[1]))
     matches, unmatched_a, unmatched_b = [], [], []
-    cost, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh)
-    for ix, mx in enumerate(x):
-        if mx >= 0:
-            matches.append([ix, mx])
-    unmatched_a = np.where(x < 0)[0]
-    unmatched_b = np.where(y < 0)[0]
+    try:
+        import lap
+
+        _, x, y = lap.lapjv(cost_matrix, extend_cost=True, cost_limit=thresh)
+        for ix, mx in enumerate(x):
+            if mx >= 0:
+                matches.append([ix, mx])
+        unmatched_a = np.where(x < 0)[0]
+        unmatched_b = np.where(y < 0)[0]
+    except ImportError:
+        from scipy.optimize import linear_sum_assignment
+
+        x, y = linear_sum_assignment(cost_matrix)
+        selected_cost = cost_matrix[x, y]
+        valid = selected_cost <= thresh
+        matches = np.array(list(zip(x[valid], y[valid])), dtype=int)
+        matched_a = set(matches[:, 0].tolist()) if matches.size else set()
+        matched_b = set(matches[:, 1].tolist()) if matches.size else set()
+        unmatched_a = np.array([idx for idx in range(cost_matrix.shape[0]) if idx not in matched_a], dtype=int)
+        unmatched_b = np.array([idx for idx in range(cost_matrix.shape[1]) if idx not in matched_b], dtype=int)
+        return matches, unmatched_a, unmatched_b
     matches = np.asarray(matches)
     return matches, unmatched_a, unmatched_b
 

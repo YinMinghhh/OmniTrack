@@ -1,5 +1,4 @@
 # query_handler_module.py
-import argparse
 import torch
 import pickle
 from torch import nn
@@ -34,14 +33,11 @@ class TrackHandler:
         self.instance_bank.det_thresh = 0.10
         self.instance_bank.init_thresh = 0.55
 
-        # self.tracker = OCSort(det_thresh=0.6, iou_threshold=0.15, use_byte=True)
-        args = make_parser().parse_args([])
-        self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                    iou_threshold=args.iou_thresh,
-                                    asso_func=args.asso,
-                                    delta_t=args.deltat,
-                                    inertia=args.inertia,
-                                    use_byte=args.use_byte)
+        self.pre_tracker_quantize_boxes = bool(
+            self.tbd_handler_cfg.get("pre_tracker_quantize_boxes", False)
+        )
+        args = self._build_tracker_args()
+        self.tracker = self._build_tracker(args)
         # args.track_thresh = 0.2
         # self.tracker = Sort(args, det_thresh=args.track_thresh)
         self.save_data = {}
@@ -59,6 +55,25 @@ class TrackHandler:
             setattr(self.instance_bank, name, value)
         else:
             super().__setattr__(name, value)
+
+    def _build_tracker_args(self):
+        args = make_parser().parse_args([])
+        if not hasattr(args, "use_circular_track"):
+            args.use_circular_track = False
+        for key, value in (self.tbd_tracker_cfg or {}).items():
+            setattr(args, key, value)
+        return args
+
+    def _build_tracker(self, args):
+        return Hybrid_Sort(
+            args,
+            det_thresh=args.track_thresh,
+            iou_threshold=args.iou_thresh,
+            asso_func=args.asso,
+            delta_t=args.deltat,
+            inertia=args.inertia,
+            use_byte=args.use_byte,
+        )
 
     def _get_active_track_boxes(self, device, dtype):
         if not hasattr(self.tracker, "trackers"):
@@ -106,8 +121,11 @@ class TrackHandler:
         bbox[:,[0,2]] *= self.img_wh[0]
         bbox[:,[1,3]] *= self.img_wh[1]
         score = score[mask]
-        bbox = bbox.to(dtype=torch.int, device=bbox.device)
-        bbox = bbox.to(dtype=torch.float32, device=bbox.device)
+        if self.pre_tracker_quantize_boxes:
+            bbox = bbox.to(dtype=torch.int, device=bbox.device)
+            bbox = bbox.to(dtype=torch.float32, device=bbox.device)
+        else:
+            bbox = bbox.to(dtype=torch.float32, device=bbox.device)
         if meta['image_wh'][0][0][0]-meta['ori_shape'][1] > 0 :
             seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
             if seam_cfg.get("enabled", False):
@@ -155,22 +173,21 @@ class TrackHandler:
 
         count = 0
         if self.timestamp is None or abs(self.timestamp - meta['timestamp']) >100:
-            args = make_parser().parse_args([])
-            self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                            iou_threshold=args.iou_thresh,
-                                            asso_func=args.asso,
-                                            delta_t=args.deltat,
-                                            inertia=args.inertia,
-                                            use_byte=args.use_byte)
+            args = self._build_tracker_args()
+            self.tracker = self._build_tracker(args)
             # args.track_thresh = 0.2
             # self.tracker = Sort(args, det_thresh=args.track_thresh)
             self.frame_id = 0
             # with open("/root/autodl-tmp/sparse4D_track/huang-2-2019-01-25_0.pkl", 'wb') as f:
             #     pickle.dump(self.save_data, f)
             # print("save!!!")
-
-
-        results, tracklets = self.tracker.update(dets.cpu().numpy())
+        frame_context = {
+            "image_width": float(self.ori_shape[0]),
+        }
+        results, tracklets = self.tracker.update(
+            dets.cpu().numpy(),
+            frame_context=frame_context,
+        )
 
         # self.save_data.update(
         #     {

@@ -35,7 +35,10 @@ def collect_active_track_data(trackers, *, max_time_since_update=None):
 
     for track_index, track in enumerate(trackers or []):
         last_observation = _box_from_array(getattr(track, "last_observation", None))
-        state_box = _box_from_array(track.get_state())
+        if hasattr(track, "get_visible_state"):
+            state_box = _box_from_array(track.get_visible_state())
+        else:
+            state_box = _box_from_array(track.get_state())
         time_since_update = getattr(track, "time_since_update", None)
 
         meta = {
