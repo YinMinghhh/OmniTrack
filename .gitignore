@@ -4,8 +4,14 @@
 *.pdf
 *.whl
 work_dirs/*
+!work_dirs/jrdb2019_4g_bs16_20260404_001118
 val/*
 data/*
+!data/JRDB2019
+!data/JRDB2019_2d_stitched_anno_pkls
+ckpt/*
+!ckpt/resnet50-19c8e357.pth
+!ckpt/jrdb2019_baseline_iter_135900.pth
 .vscode/*
 *.so
 *.o
@@ -25,3 +31,8 @@ projects/configs/JRDB_sparse4dv3_temporal_r50_1x8_bs6_*.py
 # local TrackEval artifacts
 jrdb_toolkit/tracking_eval/TrackEval/data/gt/jrdb/jrdb_2d_box_val/
 jrdb_toolkit/tracking_eval/TrackEval/data/trackers/jrdb/jrdb_2d_box_val/
+
+# local Codex/runtime files
+_shared_assets/
+.codex/
+tmp/
