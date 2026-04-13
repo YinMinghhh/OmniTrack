@@ -7,10 +7,11 @@ import torch.nn as nn
 
 # import sys
 # sys.path.append('/home/lk/workspase/python/dection/Sparse4D/projects/mmdet3d_plugin/models/rtdetr/custom_nn')
-# import custom_nn.custom_models as custom_nn
 # import custom_nn.ring_mamba as ring_mamba
-from .custom_nn import custom_models as custom_nn
+from . import conv as neck_ops
 from .custom_nn import DynamicSSM as DynamicSSM
+
+
 @NECKS.register_module()
 class CircularStatE(nn.Module):
     """
@@ -27,6 +28,7 @@ class CircularStatE(nn.Module):
         self,
         in_channels=[512, 1024, 2048],
         output_layer=[14, 17, 20],
+        circular_padding_cfg=None,
     ):
         """
         Initializes the RTDETRDecoder module with the given parameters.
@@ -51,6 +53,9 @@ class CircularStatE(nn.Module):
         super().__init__()
         self.in_channels = in_channels
         self.output_layer = output_layer
+        self.circular_padding_cfg = self._normalize_circular_padding_cfg(
+            circular_padding_cfg
+        )
 
         model = [   [-1, 1, "Conv", [256, 1, 1, None, 1, 1, False]], # 5   --->3
                     [-1, 1, "AIFI", [1024, 8]],                           #---->4
@@ -100,6 +105,39 @@ class CircularStatE(nn.Module):
             outputs_features.append(x) if m.i in self.output_layer else None  # save output features
 
         return outputs_features
+
+    @staticmethod
+    def _normalize_circular_padding_cfg(cfg):
+        resolved = dict(enabled=False, conv3x3=True, repc3=True)
+        if cfg is None:
+            return resolved
+        resolved.update(cfg)
+        resolved["enabled"] = bool(resolved.get("enabled", False))
+        resolved["conv3x3"] = bool(resolved.get("conv3x3", True))
+        resolved["repc3"] = bool(resolved.get("repc3", True))
+        return resolved
+
+    @staticmethod
+    def _is_3x3_kernel(kernel):
+        if isinstance(kernel, int):
+            return kernel == 3
+        if isinstance(kernel, (list, tuple)) and len(kernel) == 2:
+            return int(kernel[0]) == 3 and int(kernel[1]) == 3
+        return False
+
+    def _resolve_neck_module(self, module_name, args):
+        if not self.circular_padding_cfg["enabled"]:
+            return module_name
+        if (
+            module_name == "Conv"
+            and self.circular_padding_cfg["conv3x3"]
+            and len(args) >= 3
+            and self._is_3x3_kernel(args[2])
+        ):
+            return "CircularWidthConv"
+        if module_name == "RepC3" and self.circular_padding_cfg["repc3"]:
+            return "CircularWidthRepC3"
+        return module_name
             
 
     def parse_model(self, model):
@@ -115,16 +153,17 @@ class CircularStatE(nn.Module):
                 if m in {"RepC3"}:
                     args.insert(2, n)  # number of repeats
                     n = 1
-                m = getattr(custom_nn, m) if hasattr(custom_nn, m) else getattr(nn, m)
+                m = self._resolve_neck_module(m, args)
+                m = getattr(neck_ops, m) if hasattr(neck_ops, m) else getattr(nn, m)
             elif m in {"AIFI"}:
                 args = [ch[f], *args]
-                m = getattr(custom_nn, m) if hasattr(custom_nn, m) else getattr(nn, m)
+                m = getattr(neck_ops, m) if hasattr(neck_ops, m) else getattr(nn, m)
             elif m in {"Concat"}:
                 c2 = sum(ch[x] for x in f)
-                m = getattr(custom_nn, m) if hasattr(custom_nn, m) else getattr(nn, m)
+                m = getattr(neck_ops, m) if hasattr(neck_ops, m) else getattr(nn, m)
             else:
                 c2 = ch[f]
-                m = getattr(custom_nn, m) if hasattr(custom_nn, m) else getattr(nn, m)
+                m = getattr(neck_ops, m) if hasattr(neck_ops, m) else getattr(nn, m)
 
             m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
             m_.i , m_.f = i, f
@@ -138,7 +177,7 @@ class CircularStatE(nn.Module):
 
 
 if __name__ == "__main__":
-    neck = MambaHybridEncoder().cuda()
+    neck = CircularStatE().cuda()
     x = [torch.randn(1, 512, 8, 16), torch.randn(1, 1024, 4, 8), torch.randn(1, 2048, 2, 4)]
     x = [x_.cuda() for x_ in x]
     y = neck(x)

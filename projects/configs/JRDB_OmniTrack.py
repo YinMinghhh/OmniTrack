@@ -77,6 +77,7 @@ model = dict(
         type="CircularStatE",
         in_channels=[512, 1024, 2048],
         output_layer=[14, 17, 20],
+        circular_padding_cfg=dict(enabled=False),
     ),
     head=dict(
         type="OmniETRDecoder",
@@ -155,6 +156,7 @@ img_norm_cfg = dict(
 train_pipeline = [
     dict(type="LoadMultiViewImageFromFiles", to_float32=True),
     # dict(type="ResizeCropFlipImageJRDB2D"),
+    dict(type="RollStitchedImageJRDB2D"),
     dict(type="ExtendStitchedImageJRDB2D"),
     dict(type="BBoxExtendJRDB2DDETR"),
     # dict(type="BBoxRotationJRDB2D"),
@@ -183,6 +185,7 @@ train_pipeline = [
 ]
 test_pipeline = [
     dict(type="LoadMultiViewImageFromFiles", to_float32=True),
+    dict(type="RollStitchedImageJRDB2D"),
     dict(type="ExtendStitchedImageJRDB2D"),
     dict(type="NormalizeMultiviewImage", **img_norm_cfg),
     dict(type="JRDBSparse2DAdaptor"),
@@ -224,6 +227,11 @@ data_aug_conf = {
     "H": 480,
     "W": 4160,
     "rand_flip": False,
+    "roll_image_width": 3760,
+    "roll_prob": 0.0,
+    "roll_px_range": (0, 3759),
+    "roll_stride": 1,
+    "eval_roll_px": 0,
 }
 
 data = dict(

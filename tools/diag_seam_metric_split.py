@@ -337,6 +337,7 @@ def summarise_metric_bundle(metric_bundle):
         "IDF1": float(metric_bundle["Identity"]["IDF1"] * 100.0),
         "FP": int(metric_bundle["CLEAR"]["CLR_FP"]),
         "IDSW": int(metric_bundle["CLEAR"]["IDSW"]),
+        "Frag": int(metric_bundle["CLEAR"]["Frag"]),
     }
 
 
@@ -355,7 +356,7 @@ def validate_full_against_summary(tracker_dir, full_summary):
                 f"Full split mismatch for {key}: computed={full_summary[key]:.6f}, "
                 f"summary={float(expected[key]):.6f}"
             )
-    for key, summary_key in (("FP", "CLR_FP"), ("IDSW", "IDSW")):
+    for key, summary_key in (("FP", "CLR_FP"), ("IDSW", "IDSW"), ("Frag", "Frag")):
         if int(full_summary[key]) != int(expected[summary_key]):
             raise AssertionError(
                 f"Full split mismatch for {key}: computed={full_summary[key]}, "

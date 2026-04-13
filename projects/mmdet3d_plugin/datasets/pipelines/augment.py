@@ -7,6 +7,16 @@ from mmdet.datasets.builder import PIPELINES
 from PIL import Image
 
 
+def roll_bboxes_cxcywh(bboxes, roll_px, image_width):
+    if bboxes is None:
+        return bboxes
+    if len(bboxes) == 0 or image_width <= 0 or roll_px % image_width == 0:
+        return bboxes
+    rolled = np.array(bboxes, copy=True)
+    rolled[:, 0] = np.mod(rolled[:, 0] + roll_px, image_width)
+    return rolled
+
+
 @PIPELINES.register_module()
 class ResizeCropFlipImage(object):
     def __call__(self, results):
@@ -334,6 +344,46 @@ class ExtendStitchedImageJRDB2D(object):
         if "aug_mat" not in results:
             results["aug_mat"] = []
         results["aug_mat"].append(np.eye(3))
+        return results
+
+
+@PIPELINES.register_module()
+class RollStitchedImageJRDB2D(object):
+    def __call__(self, results):
+        aug_config = results.get("aug_config")
+        if aug_config is None:
+            return results
+
+        roll_px = int(aug_config.get("roll_px", 0))
+        if "img" not in results or len(results["img"]) == 0:
+            results["roll_px"] = roll_px
+            return results
+
+        stitched_width = int(
+            aug_config.get("roll_image_width", results["img"][0].shape[1])
+        )
+        if stitched_width <= 0:
+            stitched_width = int(results["img"][0].shape[1])
+        roll_px = roll_px % stitched_width if stitched_width > 0 else 0
+        results["roll_px"] = roll_px
+
+        if roll_px == 0:
+            return results
+
+        rolled_imgs = []
+        for img in results["img"]:
+            if img.shape[1] != stitched_width:
+                raise ValueError(
+                    f"RollStitchedImageJRDB2D expected width={stitched_width}, "
+                    f"got {img.shape[1]}."
+                )
+            rolled_imgs.append(np.roll(img, shift=roll_px, axis=1))
+        results["img"] = rolled_imgs
+
+        if "gt_bboxes_2d" in results:
+            results["gt_bboxes_2d"] = roll_bboxes_cxcywh(
+                results["gt_bboxes_2d"], roll_px, stitched_width
+            )
         return results
 
 @PIPELINES.register_module()

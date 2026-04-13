@@ -54,6 +54,24 @@ def parse_args():
         help="Tracker name under the TrackEval trackers directory.",
     )
     parser.add_argument(
+        "--sequence-names",
+        nargs="+",
+        default=None,
+        help="Optional JRDB stitched sequence names to export.",
+    )
+    parser.add_argument(
+        "--inverse-roll-px",
+        type=float,
+        default=0.0,
+        help="Inverse horizontal roll applied to predictions before export.",
+    )
+    parser.add_argument(
+        "--image-width",
+        type=float,
+        default=3760.0,
+        help="Original stitched panorama width used for inverse roll.",
+    )
+    parser.add_argument(
         "--skip-gt",
         action="store_true",
         help="Only export predictions.",
@@ -73,11 +91,25 @@ def load_infos(ann_file):
     return infos
 
 
-def build_split_index(infos):
+def normalize_sequence_names(sequence_names):
+    if sequence_names is None:
+        return None
+    normalized = {
+        str(sequence).strip()
+        for sequence in sequence_names
+        if str(sequence).strip()
+    }
+    return normalized or None
+
+
+def build_split_index(infos, sequence_names=None):
+    sequence_names = normalize_sequence_names(sequence_names)
     seq_to_frames = defaultdict(set)
     for info in infos:
         token = info["token"]
         seq_name, frame_name = token.rsplit("_", 1)
+        if sequence_names is not None and seq_name not in sequence_names:
+            continue
         seq_to_frames[seq_name].add(int(frame_name))
     return {seq: sorted(frames) for seq, frames in seq_to_frames.items()}
 
@@ -115,6 +147,12 @@ def write_lines(path, lines):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
+
+
+def inverse_roll_x(x, inverse_roll_px, image_width):
+    if image_width <= 0:
+        return float(x)
+    return float((float(x) - float(inverse_roll_px)) % float(image_width))
 
 
 def write_seqmap(gt_out_dir, split_name, seq_to_frames):
@@ -165,7 +203,14 @@ def convert_gt(seq_to_frames, gt_labels_dir, gt_out_dir):
     return summary
 
 
-def convert_pred(seq_to_frames, pred_json, trackers_out_dir, tracker_name):
+def convert_pred(
+    seq_to_frames,
+    pred_json,
+    trackers_out_dir,
+    tracker_name,
+    inverse_roll_px=0.0,
+    image_width=3760.0,
+):
     tracker_dir = trackers_out_dir / tracker_name / "data"
     raw = read_json(pred_json)
     pred_results = raw["results"]
@@ -188,6 +233,8 @@ def convert_pred(seq_to_frames, pred_json, trackers_out_dir, tracker_name):
                 continue
             x, y = anno["x1y1"]
             w, h = anno["size"]
+            if inverse_roll_px:
+                x = inverse_roll_x(x, inverse_roll_px, image_width)
             score = float(anno.get("detection_score", 1.0))
             if math.isnan(score):
                 score = 1.0
@@ -219,7 +266,7 @@ def main():
     pred_json = None if args.pred_json is None else (repo_root / args.pred_json).resolve()
 
     infos = load_infos(ann_file)
-    seq_to_frames = build_split_index(infos)
+    seq_to_frames = build_split_index(infos, sequence_names=args.sequence_names)
 
     output_summary = {
         "split_name": args.split_name,
@@ -244,12 +291,16 @@ def main():
             pred_json=pred_json,
             trackers_out_dir=trackers_out_dir,
             tracker_name=args.tracker_name,
+            inverse_roll_px=args.inverse_roll_px,
+            image_width=args.image_width,
         )
         output_summary["trackers_out_dir"] = str(trackers_out_dir)
         output_summary["tracker_name"] = args.tracker_name
         output_summary["tracker_data_dir"] = str(tracker_dir)
         output_summary["pred_summary"] = pred_summary
         output_summary["skipped_invalid_track_ids"] = skip_invalid_id
+        output_summary["inverse_roll_px"] = float(args.inverse_roll_px)
+        output_summary["image_width"] = float(args.image_width)
 
     print(json.dumps(output_summary, indent=2, ensure_ascii=False))
 

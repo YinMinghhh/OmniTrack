@@ -6,6 +6,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 __all__ = (
     "Conv",
@@ -21,6 +22,12 @@ __all__ = (
     "CBAM",
     "Concat",
     "RepConv",
+    "TransformerEncoderLayer",
+    "AIFI",
+    "RepC3",
+    "CircularWidthConv",
+    "CircularWidthRepConv",
+    "CircularWidthRepC3",
 )
 
 
@@ -33,33 +40,211 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
     return p
 
 
+def _padding_pair(padding):
+    if isinstance(padding, int):
+        return (padding, padding)
+    if isinstance(padding, (list, tuple)) and len(padding) == 2:
+        return (int(padding[0]), int(padding[1]))
+    raise ValueError(f"Unsupported padding value: {padding!r}")
+
+
+def apply_width_circular_padding(x, padding):
+    pad_h, pad_w = _padding_pair(padding)
+    if pad_h > 0:
+        x = F.pad(x, (0, 0, pad_h, pad_h))
+    if pad_w > 0:
+        x = F.pad(x, (pad_w, pad_w, 0, 0), mode="circular")
+    return x
+
+
 class Conv(nn.Module):
     """Standard convolution with args(ch_in, ch_out, kernel, stride, padding, groups, dilation, activation)."""
 
     default_act = nn.SiLU()  # default activation
 
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
+    def __init__(
+        self,
+        c1,
+        c2,
+        k=1,
+        s=1,
+        p=None,
+        g=1,
+        d=1,
+        act=True,
+        padding_mode="zeros",
+    ):
         """Initialize Conv layer with given arguments including activation."""
         super().__init__()
-        self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
+        self.padding = _padding_pair(autopad(k, p, d))
+        self.padding_mode = padding_mode
+        if self.padding_mode not in {"zeros", "circular_width"}:
+            raise ValueError(
+                f"Unsupported padding_mode={padding_mode!r}. "
+                "Expected 'zeros' or 'circular_width'."
+            )
+        conv_padding = 0 if self.padding_mode == "circular_width" else self.padding
+        self.conv = nn.Conv2d(
+            c1,
+            c2,
+            k,
+            s,
+            conv_padding,
+            groups=g,
+            dilation=d,
+            bias=False,
+        )
         self.bn = nn.BatchNorm2d(c2)
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
+    def _pad_input(self, x):
+        if self.padding_mode == "circular_width":
+            return apply_width_circular_padding(x, self.padding)
+        return x
+
     def forward(self, x):
         """Apply convolution, batch normalization and activation to input tensor."""
+        x = self._pad_input(x)
         return self.act(self.bn(self.conv(x)))
 
     def forward_fuse(self, x):
         """Perform transposed convolution of 2D data."""
+        x = self._pad_input(x)
         return self.act(self.conv(x))
+
+
+class TransformerEncoderLayer(nn.Module):
+    """Defines a single layer of the transformer encoder."""
+
+    def __init__(
+        self,
+        c1,
+        cm=2048,
+        num_heads=8,
+        dropout=0.0,
+        act=nn.GELU(),
+        normalize_before=False,
+    ):
+        super().__init__()
+        self.ma = nn.MultiheadAttention(
+            c1, num_heads, dropout=dropout, batch_first=True
+        )
+        self.fc1 = nn.Linear(c1, cm)
+        self.fc2 = nn.Linear(cm, c1)
+
+        self.norm1 = nn.LayerNorm(c1)
+        self.norm2 = nn.LayerNorm(c1)
+        self.dropout = nn.Dropout(dropout)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.act = act
+        self.normalize_before = normalize_before
+
+    @staticmethod
+    def with_pos_embed(tensor, pos=None):
+        return tensor if pos is None else tensor + pos
+
+    def forward_post(self, src, src_mask=None, src_key_padding_mask=None, pos=None):
+        q = k = self.with_pos_embed(src, pos)
+        src2 = self.ma(
+            q,
+            k,
+            value=src,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+        )[0]
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        src2 = self.fc2(self.dropout(self.act(self.fc1(src))))
+        src = src + self.dropout2(src2)
+        return self.norm2(src)
+
+    def forward_pre(self, src, src_mask=None, src_key_padding_mask=None, pos=None):
+        src2 = self.norm1(src)
+        q = k = self.with_pos_embed(src2, pos)
+        src2 = self.ma(
+            q,
+            k,
+            value=src2,
+            attn_mask=src_mask,
+            key_padding_mask=src_key_padding_mask,
+        )[0]
+        src = src + self.dropout1(src2)
+        src2 = self.norm2(src)
+        src2 = self.fc2(self.dropout(self.act(self.fc1(src2))))
+        return src + self.dropout2(src2)
+
+    def forward(self, src, src_mask=None, src_key_padding_mask=None, pos=None):
+        if self.normalize_before:
+            return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
+        return self.forward_post(src, src_mask, src_key_padding_mask, pos)
+
+
+class AIFI(TransformerEncoderLayer):
+    """Defines the AIFI transformer layer."""
+
+    def __init__(
+        self,
+        c1,
+        cm=2048,
+        num_heads=8,
+        dropout=0,
+        act=nn.GELU(),
+        normalize_before=False,
+    ):
+        super().__init__(c1, cm, num_heads, dropout, act, normalize_before)
+
+    def forward(self, x):
+        c, h, w = x.shape[1:]
+        pos_embed = self.build_2d_sincos_position_embedding(w, h, c)
+        x = super().forward(
+            x.flatten(2).permute(0, 2, 1),
+            pos=pos_embed.to(device=x.device, dtype=x.dtype),
+        )
+        return x.permute(0, 2, 1).view([-1, c, h, w]).contiguous()
+
+    @staticmethod
+    def build_2d_sincos_position_embedding(w, h, embed_dim=256, temperature=10000.0):
+        assert embed_dim % 4 == 0, (
+            "Embed dimension must be divisible by 4 for 2D sin-cos "
+            "position embedding"
+        )
+        grid_w = torch.arange(w, dtype=torch.float32)
+        grid_h = torch.arange(h, dtype=torch.float32)
+        grid_w, grid_h = torch.meshgrid(grid_w, grid_h, indexing="ij")
+        pos_dim = embed_dim // 4
+        omega = torch.arange(pos_dim, dtype=torch.float32) / pos_dim
+        omega = 1.0 / (temperature**omega)
+
+        out_w = grid_w.flatten()[..., None] @ omega[None]
+        out_h = grid_h.flatten()[..., None] @ omega[None]
+
+        return torch.cat(
+            [torch.sin(out_w), torch.cos(out_w), torch.sin(out_h), torch.cos(out_h)],
+            1,
+        )[None]
 
 
 class Conv2(Conv):
     """Simplified RepConv module with Conv fusing."""
 
-    def __init__(self, c1, c2, k=3, s=1, p=None, g=1, d=1, act=True):
+    def __init__(
+        self,
+        c1,
+        c2,
+        k=3,
+        s=1,
+        p=None,
+        g=1,
+        d=1,
+        act=True,
+        padding_mode="zeros",
+    ):
         """Initialize Conv layer with given arguments including activation."""
-        super().__init__(c1, c2, k, s, p, g=g, d=d, act=act)
+        super().__init__(
+            c1, c2, k, s, p, g=g, d=d, act=act, padding_mode=padding_mode
+        )
         self.cv2 = nn.Conv2d(c1, c2, 1, s, autopad(1, p, d), groups=g, dilation=d, bias=False)  # add 1x1 conv
 
     def forward(self, x):
@@ -101,9 +286,27 @@ class LightConv(nn.Module):
 class DWConv(Conv):
     """Depth-wise convolution."""
 
-    def __init__(self, c1, c2, k=1, s=1, d=1, act=True):  # ch_in, ch_out, kernel, stride, dilation, activation
+    def __init__(
+        self,
+        c1,
+        c2,
+        k=1,
+        s=1,
+        d=1,
+        act=True,
+        padding_mode="zeros",
+    ):  # ch_in, ch_out, kernel, stride, dilation, activation
         """Initialize Depth-wise convolution with given parameters."""
-        super().__init__(c1, c2, k, s, g=math.gcd(c1, c2), d=d, act=act)
+        super().__init__(
+            c1,
+            c2,
+            k,
+            s,
+            g=math.gcd(c1, c2),
+            d=d,
+            act=act,
+            padding_mode=padding_mode,
+        )
 
 
 class DWConvTranspose2d(nn.ConvTranspose2d):
@@ -182,21 +385,47 @@ class RepConv(nn.Module):
 
     default_act = nn.SiLU()  # default activation
 
-    def __init__(self, c1, c2, k=3, s=1, p=1, g=1, d=1, act=True, bn=False, deploy=False):
+    def __init__(
+        self,
+        c1,
+        c2,
+        k=3,
+        s=1,
+        p=1,
+        g=1,
+        d=1,
+        act=True,
+        bn=False,
+        deploy=False,
+        padding_mode="zeros",
+    ):
         """Initializes Light Convolution layer with inputs, outputs & optional activation function."""
         super().__init__()
         assert k == 3 and p == 1
         self.g = g
         self.c1 = c1
         self.c2 = c2
+        self.padding = _padding_pair(p)
+        self.padding_mode = padding_mode
         self.act = self.default_act if act is True else act if isinstance(act, nn.Module) else nn.Identity()
 
         self.bn = nn.BatchNorm2d(num_features=c1) if bn and c2 == c1 and s == 1 else None
-        self.conv1 = Conv(c1, c2, k, s, p=p, g=g, act=False)
+        self.conv1 = Conv(
+            c1,
+            c2,
+            k,
+            s,
+            p=p,
+            g=g,
+            act=False,
+            padding_mode=padding_mode,
+        )
         self.conv2 = Conv(c1, c2, 1, s, p=(p - k // 2), g=g, act=False)
 
     def forward_fuse(self, x):
         """Forward process."""
+        if self.padding_mode == "circular_width":
+            x = apply_width_circular_padding(x, self.padding)
         return self.act(self.conv(x))
 
     def forward(self, x):
@@ -275,6 +504,23 @@ class RepConv(nn.Module):
             self.__delattr__("id_tensor")
 
 
+class RepC3(nn.Module):
+    """Rep C3."""
+
+    def __init__(self, c1, c2, n=3, e=1.0, padding_mode="zeros"):
+        super().__init__()
+        c_ = int(c2 * e)
+        self.cv1 = Conv(c1, c2, 1, 1)
+        self.cv2 = Conv(c1, c2, 1, 1)
+        self.m = nn.Sequential(
+            *[RepConv(c_, c_, padding_mode=padding_mode) for _ in range(n)]
+        )
+        self.cv3 = Conv(c_, c2, 1, 1) if c_ != c2 else nn.Identity()
+
+    def forward(self, x):
+        return self.cv3(self.m(self.cv1(x)) + self.cv2(x))
+
+
 class ChannelAttention(nn.Module):
     """Channel-attention module https://github.com/open-mmlab/mmdetection/tree/v3.0.0rc1/configs/rtmdet."""
 
@@ -331,3 +577,52 @@ class Concat(nn.Module):
     def forward(self, x):
         """Forward pass for the YOLOv8 mask Proto module."""
         return torch.cat(x, self.d)
+
+
+class CircularWidthConv(Conv):
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
+        super().__init__(
+            c1,
+            c2,
+            k,
+            s,
+            p,
+            g=g,
+            d=d,
+            act=act,
+            padding_mode="circular_width",
+        )
+
+
+class CircularWidthRepConv(RepConv):
+    def __init__(
+        self,
+        c1,
+        c2,
+        k=3,
+        s=1,
+        p=1,
+        g=1,
+        d=1,
+        act=True,
+        bn=False,
+        deploy=False,
+    ):
+        super().__init__(
+            c1,
+            c2,
+            k,
+            s,
+            p,
+            g=g,
+            d=d,
+            act=act,
+            bn=bn,
+            deploy=deploy,
+            padding_mode="circular_width",
+        )
+
+
+class CircularWidthRepC3(RepC3):
+    def __init__(self, c1, c2, n=3, e=1.0):
+        super().__init__(c1, c2, n=n, e=e, padding_mode="circular_width")

@@ -1091,6 +1091,7 @@ def evaluate_sequence_metrics(proc_data: dict[str, Any]) -> dict[str, Any]:
         "FN": int(clear_res["CLR_FN"]),
         "FP": int(clear_res["CLR_FP"]),
         "IDSW": int(clear_res["IDSW"]),
+        "Frag": int(clear_res["Frag"]),
     }
 
 
@@ -1368,6 +1369,7 @@ def main() -> None:
             "FN",
             "FP",
             "IDSW",
+            "Frag",
             "FP_seam",
             "FP_non_seam",
         ],

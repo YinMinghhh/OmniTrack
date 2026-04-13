@@ -48,6 +48,30 @@ def _get_iou3d_nms_cuda():
     return iou3d_nms_cuda
 
 
+def normalize_sequence_whitelist(sequence_whitelist):
+    if sequence_whitelist is None:
+        return None
+    if isinstance(sequence_whitelist, str):
+        sequence_whitelist = [sequence_whitelist]
+    normalized = {
+        str(sequence).strip()
+        for sequence in sequence_whitelist
+        if str(sequence).strip()
+    }
+    return normalized or None
+
+
+def filter_data_infos_by_sequence(data_infos, sequence_whitelist):
+    normalized = normalize_sequence_whitelist(sequence_whitelist)
+    if normalized is None:
+        return data_infos
+    return [
+        info
+        for info in data_infos
+        if info["token"].rsplit("_", 1)[0] in normalized
+    ]
+
+
 @DATASETS.register_module()
 class JRDB2DDetTrackDataset(Dataset):
     DefaultAttribute = {
@@ -77,6 +101,7 @@ class JRDB2DDetTrackDataset(Dataset):
         keep_consistent_seq_aug=True,
         tracking=False,
         tracking_threshold=0.2,
+        sequence_whitelist=None,
     ):
         self.version = version
         self.load_interval = load_interval
@@ -87,6 +112,7 @@ class JRDB2DDetTrackDataset(Dataset):
         self.test_mode = test_mode
         self.modality = modality
         self.box_mode_3d = 0
+        self.sequence_whitelist = normalize_sequence_whitelist(sequence_whitelist)
 
         if classes is not None:
             self.CLASSES = classes
@@ -212,14 +238,45 @@ class JRDB2DDetTrackDataset(Dataset):
             flip = False
             rotate = 0
             rotate_3d = 0
+        roll_px = self._sample_roll_px()
         aug_config = {
             "resize": resize,
             "resize_dims": resize_dims,
             "crop": crop,
             "flip": flip,
             "rotate": rotate,
+            "roll_px": roll_px,
+            "roll_image_width": int(self.data_aug_conf.get("roll_image_width", 3760)),
         }
         return aug_config
+
+    def _sample_roll_px(self):
+        if self.data_aug_conf is None:
+            return 0
+        roll_image_width = int(self.data_aug_conf.get("roll_image_width", 3760))
+        if roll_image_width <= 0:
+            return 0
+        if self.test_mode:
+            return int(self.data_aug_conf.get("eval_roll_px", 0)) % roll_image_width
+
+        roll_prob = float(self.data_aug_conf.get("roll_prob", 0.0))
+        if roll_prob <= 0.0 or np.random.uniform() > roll_prob:
+            return 0
+
+        roll_min, roll_max = self.data_aug_conf.get(
+            "roll_px_range", (0, roll_image_width - 1)
+        )
+        roll_min = int(roll_min)
+        roll_max = int(roll_max)
+        if roll_max < roll_min:
+            roll_min, roll_max = roll_max, roll_min
+        stride = max(1, int(self.data_aug_conf.get("roll_stride", 1)))
+        num_steps = ((roll_max - roll_min) // stride) + 1
+        if num_steps <= 0:
+            return 0
+        step_idx = int(np.random.randint(0, num_steps))
+        roll_px = roll_min + step_idx * stride
+        return roll_px % roll_image_width
 
     def __getitem__(self, idx):
         if isinstance(idx, dict):
@@ -250,6 +307,9 @@ class JRDB2DDetTrackDataset(Dataset):
         data = mmcv.load(ann_file, file_format="pkl")
         data_infos = list(sorted(data["infos"], key=lambda e: e["timestamp"]))
         data_infos = data_infos[:: self.load_interval]
+        data_infos = filter_data_infos_by_sequence(
+            data_infos, self.sequence_whitelist
+        )
         self.metadata = data["metadata"]
         self.version = self.metadata["version"]
         print(self.metadata)
