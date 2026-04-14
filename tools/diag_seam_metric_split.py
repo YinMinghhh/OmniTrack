@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import csv
+import importlib.util
 import io
 import math
 import sys
@@ -9,7 +10,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 from scipy.optimize import linear_sum_assignment
 
 
@@ -22,16 +22,31 @@ if "bool" not in np.__dict__:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 TRACKEVAL_ROOT = REPO_ROOT / "jrdb_toolkit/tracking_eval/TrackEval"
 if str(TRACKEVAL_ROOT) not in sys.path:
     sys.path.insert(0, str(TRACKEVAL_ROOT))
 
+GEOMETRY_MODULE_PATH = (
+    REPO_ROOT
+    / "projects/mmdet3d_plugin/models/trackers/hybrid_sort_tracker/association_geometry.py"
+)
+GEOMETRY_SPEC = importlib.util.spec_from_file_location(
+    "diag_association_geometry",
+    GEOMETRY_MODULE_PATH,
+)
+GEOMETRY_MODULE = importlib.util.module_from_spec(GEOMETRY_SPEC)
+GEOMETRY_SPEC.loader.exec_module(GEOMETRY_MODULE)
+high_lat_mask_xywh = GEOMETRY_MODULE.high_lat_mask_xywh
+seam_mask_xywh = GEOMETRY_MODULE.seam_mask_xywh
 from trackeval.datasets.jrdb_2d_box import JRDB2DBox  # noqa: E402
 from trackeval.metrics.clear import CLEAR  # noqa: E402
 from trackeval.metrics.hota import HOTA  # noqa: E402
 from trackeval.metrics.identity import Identity  # noqa: E402
 
 
+SUBSET_NAMES = ("full", "seam", "non_seam", "high_lat", "seam_high_lat")
 LEAKAGE_RULES = (
     (0.01, "mechanism_local"),
     (0.05, "descriptive_with_caveat"),
@@ -81,10 +96,28 @@ def parse_args():
         help="ERP stitched image width used by the seam rule.",
     )
     parser.add_argument(
+        "--image-height",
+        type=float,
+        default=480.0,
+        help="ERP stitched image height used by the high-lat rule.",
+    )
+    parser.add_argument(
         "--seam-band-px",
         type=float,
         default=400.0,
         help="Band width for seam-conditioned membership.",
+    )
+    parser.add_argument(
+        "--high-lat-deg",
+        type=float,
+        default=45.0,
+        help="Absolute latitude threshold used for the high-lat slice.",
+    )
+    parser.add_argument(
+        "--bad-case-top-k",
+        type=int,
+        default=5,
+        help="Number of worst seam/high-lat sequences to shortlist.",
     )
     parser.add_argument(
         "--out-dir",
@@ -111,19 +144,9 @@ def make_dataset(args, tracker_name):
 def suppress_metric_stdout(fn, *args, **kwargs):
     with contextlib.redirect_stdout(io.StringIO()):
         return fn(*args, **kwargs)
-
-
-def seam_mask_xywh(boxes_xywh, image_width, seam_band_px):
-    if boxes_xywh.size == 0:
-        return np.zeros((0,), dtype=bool)
-    x1 = boxes_xywh[:, 0]
-    x2 = boxes_xywh[:, 0] + boxes_xywh[:, 2]
-    return (
-        (x1 < seam_band_px)
-        | (x2 > image_width - seam_band_px)
-        | (x1 < 0)
-        | (x2 > image_width)
-    )
+def full_mask_xywh(boxes_xywh):
+    boxes_xywh = np.asarray(boxes_xywh, dtype=float).reshape(-1, 4)
+    return np.ones((boxes_xywh.shape[0],), dtype=bool)
 
 
 def remap_ids(id_list):
@@ -189,7 +212,9 @@ def filter_preprocessed_subset(data, gt_keep_masks, tracker_keep_masks):
     return subset
 
 
-def build_subset_data(data, subset_name, image_width, seam_band_px):
+def build_subset_memberships(
+    data, image_width, image_height, seam_band_px, high_lat_deg
+):
     gt_seam_masks = [
         seam_mask_xywh(np.asarray(dets), image_width, seam_band_px)
         for dets in data["gt_dets"]
@@ -198,24 +223,54 @@ def build_subset_data(data, subset_name, image_width, seam_band_px):
         seam_mask_xywh(np.asarray(dets), image_width, seam_band_px)
         for dets in data["tracker_dets"]
     ]
-
-    if subset_name == "full":
-        return deepcopy(data), gt_seam_masks, tracker_seam_masks
-    if subset_name == "seam":
-        return (
-            filter_preprocessed_subset(data, gt_seam_masks, tracker_seam_masks),
-            gt_seam_masks,
-            tracker_seam_masks,
+    gt_high_lat_masks = [
+        high_lat_mask_xywh(
+            np.asarray(dets),
+            image_width=image_width,
+            image_height=image_height,
+            high_lat_deg=high_lat_deg,
         )
-    if subset_name == "non_seam":
-        return (
-            filter_preprocessed_subset(
-                data,
-                [~mask for mask in gt_seam_masks],
-                [~mask for mask in tracker_seam_masks],
-            ),
-            gt_seam_masks,
-            tracker_seam_masks,
+        for dets in data["gt_dets"]
+    ]
+    tracker_high_lat_masks = [
+        high_lat_mask_xywh(
+            np.asarray(dets),
+            image_width=image_width,
+            image_height=image_height,
+            high_lat_deg=high_lat_deg,
+        )
+        for dets in data["tracker_dets"]
+    ]
+
+    return {
+        "full": {
+            "gt": [full_mask_xywh(dets) for dets in data["gt_dets"]],
+            "tracker": [full_mask_xywh(dets) for dets in data["tracker_dets"]],
+        },
+        "seam": {"gt": gt_seam_masks, "tracker": tracker_seam_masks},
+        "non_seam": {
+            "gt": [~mask for mask in gt_seam_masks],
+            "tracker": [~mask for mask in tracker_seam_masks],
+        },
+        "high_lat": {"gt": gt_high_lat_masks, "tracker": tracker_high_lat_masks},
+        "seam_high_lat": {
+            "gt": [seam & high_lat for seam, high_lat in zip(gt_seam_masks, gt_high_lat_masks)],
+            "tracker": [
+                seam & high_lat
+                for seam, high_lat in zip(tracker_seam_masks, tracker_high_lat_masks)
+            ],
+        },
+    }
+
+
+def build_subset_data(data, subset_name, subset_memberships):
+    if subset_name == "full":
+        return deepcopy(data)
+    if subset_name in subset_memberships:
+        return filter_preprocessed_subset(
+            data,
+            subset_memberships[subset_name]["gt"],
+            subset_memberships[subset_name]["tracker"],
         )
     raise ValueError(f"Unsupported subset_name={subset_name!r}")
 
@@ -298,6 +353,130 @@ def compute_membership_leakage(full_data, gt_seam_masks, tracker_seam_masks):
     }
 
 
+def write_rows_csv(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+
+    fieldnames = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def combined_coverage_rows(coverage_rows, tracker_name):
+    combined_rows = []
+    full_rows = [
+        row
+        for row in coverage_rows
+        if row["tracker"] == tracker_name and row["subset"] == "full"
+    ]
+    full_coverage = {
+        "tracker": tracker_name,
+        "subset": "full",
+        "seq": "COMBINED",
+        "gt_dets": int(sum(row["gt_dets"] for row in full_rows)),
+        "tracker_dets": int(sum(row["tracker_dets"] for row in full_rows)),
+        "gt_ids": int(sum(row["gt_ids"] for row in full_rows)),
+        "tracker_ids": int(sum(row["tracker_ids"] for row in full_rows)),
+        "gt_fraction_of_full": 1.0,
+        "tracker_fraction_of_full": 1.0,
+    }
+    combined_rows.append(full_coverage)
+
+    for subset_name in SUBSET_NAMES:
+        if subset_name == "full":
+            continue
+        subset_rows = [
+            row
+            for row in coverage_rows
+            if row["tracker"] == tracker_name and row["subset"] == subset_name
+        ]
+        combined = {
+            "tracker": tracker_name,
+            "subset": subset_name,
+            "seq": "COMBINED",
+            "gt_dets": int(sum(row["gt_dets"] for row in subset_rows)),
+            "tracker_dets": int(sum(row["tracker_dets"] for row in subset_rows)),
+            "gt_ids": int(sum(row["gt_ids"] for row in subset_rows)),
+            "tracker_ids": int(sum(row["tracker_ids"] for row in subset_rows)),
+        }
+        combined["gt_fraction_of_full"] = (
+            float(combined["gt_dets"]) / float(full_coverage["gt_dets"])
+            if full_coverage["gt_dets"] > 0
+            else 0.0
+        )
+        combined["tracker_fraction_of_full"] = (
+            float(combined["tracker_dets"]) / float(full_coverage["tracker_dets"])
+            if full_coverage["tracker_dets"] > 0
+            else 0.0
+        )
+        combined_rows.append(combined)
+    return combined_rows
+
+
+def rank_bad_case_sequences(per_sequence_metric_rows, coverage_rows, tracker_name, top_k):
+    seq_rows = {}
+    for row in per_sequence_metric_rows:
+        if row["tracker"] != tracker_name or row["seq"] == "COMBINED":
+            continue
+        seq_entry = seq_rows.setdefault(row["seq"], {"seq": row["seq"]})
+        subset_name = row["subset"]
+        seq_entry[f"{subset_name}_HOTA"] = float(row["HOTA"])
+        seq_entry[f"{subset_name}_AssA"] = float(row["AssA"])
+        seq_entry[f"{subset_name}_IDF1"] = float(row["IDF1"])
+
+    for row in coverage_rows:
+        if row["tracker"] != tracker_name or row["seq"] == "COMBINED":
+            continue
+        seq_entry = seq_rows.setdefault(row["seq"], {"seq": row["seq"]})
+        subset_name = row["subset"]
+        seq_entry[f"{subset_name}_gt_dets"] = int(row["gt_dets"])
+        seq_entry[f"{subset_name}_tracker_dets"] = int(row["tracker_dets"])
+
+    ranking = []
+    for seq_name, row in seq_rows.items():
+        subset_scores = []
+        active_subset_count = 0
+        for subset_name in ("seam", "high_lat"):
+            gt_dets = int(row.get(f"{subset_name}_gt_dets", 0))
+            score = row.get(f"{subset_name}_HOTA")
+            if gt_dets > 0 and score is not None:
+                subset_scores.append(float(score))
+                active_subset_count += 1
+        if active_subset_count == 0:
+            continue
+        ranking.append(
+            {
+                **row,
+                "seq": seq_name,
+                "bad_case_score": float(np.mean(subset_scores)),
+                "active_subset_count": active_subset_count,
+            }
+        )
+
+    ranking.sort(
+        key=lambda row: (
+            float(row["bad_case_score"]),
+            -int(row["active_subset_count"]),
+            row["seq"],
+        )
+    )
+    for rank, row in enumerate(ranking, start=1):
+        row["rank"] = rank
+        row["selected"] = rank <= int(top_k)
+    return ranking
+
+
 def evaluate_metric_bundle(data):
     hota = HOTA()
     clear = CLEAR({"PRINT_CONFIG": False})
@@ -370,7 +549,8 @@ def main():
 
     print(
         f"Running seam-conditioned split for trackers={args.tracker_names}, "
-        f"band={args.seam_band_px}, image_width={args.image_width}"
+        f"band={args.seam_band_px}, image_width={args.image_width}, "
+        f"high_lat_deg={args.high_lat_deg}"
     )
 
     for tracker_name in args.tracker_names:
@@ -382,25 +562,26 @@ def main():
         per_sequence_metric_rows = []
         coverage_rows = []
         leakage_rows = []
-        per_subset_seq_metrics = {"full": {}, "seam": {}, "non_seam": {}}
+        per_subset_seq_metrics = {subset_name: {} for subset_name in SUBSET_NAMES}
 
         for seq in dataset.seq_list:
             raw_data = dataset.get_raw_seq_data(tracker_name, seq, is_3d=False)
             preprocessed = dataset.get_preprocessed_seq_data(raw_data, args.class_name)
 
             subset_cache = {}
-            full_gt_seam_masks = None
-            full_tracker_seam_masks = None
-            for subset_name in ("full", "seam", "non_seam"):
-                subset_data, gt_seam_masks, tracker_seam_masks = build_subset_data(
+            subset_memberships = build_subset_memberships(
+                preprocessed,
+                image_width=args.image_width,
+                image_height=args.image_height,
+                seam_band_px=args.seam_band_px,
+                high_lat_deg=args.high_lat_deg,
+            )
+            for subset_name in SUBSET_NAMES:
+                subset_data = build_subset_data(
                     preprocessed,
                     subset_name,
-                    args.image_width,
-                    args.seam_band_px,
+                    subset_memberships,
                 )
-                if subset_name == "full":
-                    full_gt_seam_masks = gt_seam_masks
-                    full_tracker_seam_masks = tracker_seam_masks
                 subset_cache[subset_name] = subset_data
                 per_subset_seq_metrics[subset_name][seq] = evaluate_metric_bundle(
                     subset_data
@@ -433,7 +614,7 @@ def main():
                     f"{seam_tracker} + {non_seam_tracker} != {full_tracker}"
                 )
 
-            for subset_name in ("full", "seam", "non_seam"):
+            for subset_name in SUBSET_NAMES:
                 subset_data = subset_cache[subset_name]
                 coverage_rows.append(
                     {
@@ -457,21 +638,23 @@ def main():
                     }
                 )
 
-            leakage_rows.append(
-                {
-                    "tracker": tracker_name,
-                    "scope": "per_sequence",
-                    "seq": seq,
-                    **compute_membership_leakage(
-                        preprocessed,
-                        full_gt_seam_masks,
-                        full_tracker_seam_masks,
-                    ),
-                }
-            )
+            for subset_name in ("seam", "high_lat", "seam_high_lat"):
+                leakage_rows.append(
+                    {
+                        "tracker": tracker_name,
+                        "scope": "per_sequence",
+                        "subset": subset_name,
+                        "seq": seq,
+                        **compute_membership_leakage(
+                            preprocessed,
+                            subset_memberships[subset_name]["gt"],
+                            subset_memberships[subset_name]["tracker"],
+                        ),
+                    }
+                )
 
         combined_metric_rows = []
-        for subset_name in ("full", "seam", "non_seam"):
+        for subset_name in SUBSET_NAMES:
             combined = combine_metric_bundle(per_subset_seq_metrics[subset_name])
             summary = summarise_metric_bundle(combined)
             combined_metric_rows.append(
@@ -485,116 +668,75 @@ def main():
 
         validate_full_against_summary(tracker_dir, combined_metric_rows[0])
 
-        total_matched_pairs = 0
-        total_cross_matches = 0
-        for row in leakage_rows:
-            total_matched_pairs += row["matched_pairs"]
-            total_cross_matches += row["cross_subset_matches"]
-        combined_leakage = (
-            float(total_cross_matches) / float(total_matched_pairs)
-            if total_matched_pairs > 0
-            else 0.0
-        )
-        leakage_rows.append(
-            {
-                "tracker": tracker_name,
-                "scope": "combined",
-                "seq": "COMBINED",
-                "matched_pairs": int(total_matched_pairs),
-                "cross_subset_matches": int(total_cross_matches),
-                "membership_leakage": combined_leakage,
-                "interpretation": leakage_bucket(combined_leakage),
-            }
-        )
-
-        full_coverage = {
-            "tracker": tracker_name,
-            "subset": "full",
-            "seq": "COMBINED",
-            "gt_dets": int(sum(row["gt_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "full")),
-            "tracker_dets": int(sum(row["tracker_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "full")),
-            "gt_ids": int(sum(row["gt_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "full")),
-            "tracker_ids": int(sum(row["tracker_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "full")),
-            "gt_fraction_of_full": 1.0,
-            "tracker_fraction_of_full": 1.0,
-        }
-        seam_coverage = {
-            "tracker": tracker_name,
-            "subset": "seam",
-            "seq": "COMBINED",
-            "gt_dets": int(sum(row["gt_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "seam")),
-            "tracker_dets": int(sum(row["tracker_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "seam")),
-            "gt_ids": int(sum(row["gt_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "seam")),
-            "tracker_ids": int(sum(row["tracker_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "seam")),
-        }
-        seam_coverage["gt_fraction_of_full"] = (
-            float(seam_coverage["gt_dets"]) / float(full_coverage["gt_dets"])
-            if full_coverage["gt_dets"] > 0
-            else 0.0
-        )
-        seam_coverage["tracker_fraction_of_full"] = (
-            float(seam_coverage["tracker_dets"])
-            / float(full_coverage["tracker_dets"])
-            if full_coverage["tracker_dets"] > 0
-            else 0.0
-        )
-        non_seam_coverage = {
-            "tracker": tracker_name,
-            "subset": "non_seam",
-            "seq": "COMBINED",
-            "gt_dets": int(sum(row["gt_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "non_seam")),
-            "tracker_dets": int(sum(row["tracker_dets"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "non_seam")),
-            "gt_ids": int(sum(row["gt_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "non_seam")),
-            "tracker_ids": int(sum(row["tracker_ids"] for row in coverage_rows if row["tracker"] == tracker_name and row["subset"] == "non_seam")),
-        }
-        non_seam_coverage["gt_fraction_of_full"] = (
-            float(non_seam_coverage["gt_dets"]) / float(full_coverage["gt_dets"])
-            if full_coverage["gt_dets"] > 0
-            else 0.0
-        )
-        non_seam_coverage["tracker_fraction_of_full"] = (
-            float(non_seam_coverage["tracker_dets"])
-            / float(full_coverage["tracker_dets"])
-            if full_coverage["tracker_dets"] > 0
-            else 0.0
-        )
-
-        pd.DataFrame(combined_metric_rows).to_csv(
-            tracker_out_dir / "combined_metrics.csv",
-            index=False,
-            float_format="%.6f",
-        )
-        pd.DataFrame(per_sequence_metric_rows).query("tracker == @tracker_name").to_csv(
-            tracker_out_dir / "per_sequence_metrics.csv",
-            index=False,
-            float_format="%.6f",
-        )
-        pd.DataFrame(
-            [
-                *[
-                    row
-                    for row in coverage_rows
-                    if row["tracker"] == tracker_name
-                ],
-                full_coverage,
-                seam_coverage,
-                non_seam_coverage,
+        for subset_name in ("seam", "high_lat", "seam_high_lat"):
+            subset_rows = [
+                row
+                for row in leakage_rows
+                if row["tracker"] == tracker_name and row["subset"] == subset_name
             ]
-        ).to_csv(
-            tracker_out_dir / "coverage.csv",
-            index=False,
-            float_format="%.6f",
-        )
-        pd.DataFrame(leakage_rows).query("tracker == @tracker_name").to_csv(
-            tracker_out_dir / "membership_leakage.csv",
-            index=False,
-            float_format="%.6f",
+            total_matched_pairs = int(sum(row["matched_pairs"] for row in subset_rows))
+            total_cross_matches = int(
+                sum(row["cross_subset_matches"] for row in subset_rows)
+            )
+            combined_leakage = (
+                float(total_cross_matches) / float(total_matched_pairs)
+                if total_matched_pairs > 0
+                else 0.0
+            )
+            leakage_rows.append(
+                {
+                    "tracker": tracker_name,
+                    "scope": "combined",
+                    "subset": subset_name,
+                    "seq": "COMBINED",
+                    "matched_pairs": total_matched_pairs,
+                    "cross_subset_matches": total_cross_matches,
+                    "membership_leakage": combined_leakage,
+                    "interpretation": leakage_bucket(combined_leakage),
+                }
+            )
+
+        tracker_coverage_rows = [
+            row for row in coverage_rows if row["tracker"] == tracker_name
+        ]
+        combined_coverage = combined_coverage_rows(coverage_rows, tracker_name)
+        bad_case_ranking = rank_bad_case_sequences(
+            per_sequence_metric_rows=per_sequence_metric_rows,
+            coverage_rows=coverage_rows,
+            tracker_name=tracker_name,
+            top_k=args.bad_case_top_k,
         )
 
+        write_rows_csv(tracker_out_dir / "combined_metrics.csv", combined_metric_rows)
+        write_rows_csv(
+            tracker_out_dir / "per_sequence_metrics.csv",
+            [row for row in per_sequence_metric_rows if row["tracker"] == tracker_name],
+        )
+        write_rows_csv(
+            tracker_out_dir / "coverage.csv",
+            [*tracker_coverage_rows, *combined_coverage],
+        )
+        write_rows_csv(
+            tracker_out_dir / "membership_leakage.csv",
+            [row for row in leakage_rows if row["tracker"] == tracker_name],
+        )
+        write_rows_csv(
+            tracker_out_dir / "bad_case_candidates.csv",
+            bad_case_ranking,
+        )
+
+        seam_combined = next(
+            row
+            for row in leakage_rows
+            if row["tracker"] == tracker_name
+            and row["scope"] == "combined"
+            and row["subset"] == "seam"
+        )
         print(
             f"[{tracker_name}] wrote diagnostics to {tracker_out_dir}. "
             f"Full HOTA={combined_metric_rows[0]['HOTA']:.3f}, "
-            f"seam leakage={combined_leakage:.4%} ({leakage_bucket(combined_leakage)})"
+            f"seam leakage={seam_combined['membership_leakage']:.4%} "
+            f"({seam_combined['interpretation']})"
         )
 
 

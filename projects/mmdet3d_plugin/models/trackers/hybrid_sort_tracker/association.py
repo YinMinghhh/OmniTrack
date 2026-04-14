@@ -1,6 +1,12 @@
 import os
 import numpy as np
 
+from .association_geometry import (
+    center_similarity_xyxy_matrix,
+    selective_spherical_pair_mask_xyxy,
+    spherical_iou_xyxy_matrix,
+)
+
 def intersection_batch(bboxes1, bboxes2):
     bboxes2 = np.expand_dims(bboxes2, 0)
     bboxes1 = np.expand_dims(bboxes1, 1)
@@ -267,6 +273,245 @@ def ct_dist(bboxes1, bboxes2):
     # The linear rescaling is a naive version and needs more study
     ct_dist = ct_dist / ct_dist.max()
     return ct_dist.max() - ct_dist # resize to (0,1)
+
+
+def score_difference_matrix(detections, trackers, tracker_score_index=4):
+    detections = np.asarray(detections, dtype=float)
+    trackers = np.asarray(trackers, dtype=float)
+    if detections.size == 0 or trackers.size == 0:
+        return np.zeros((detections.shape[0], trackers.shape[0]), dtype=float)
+
+    if detections.shape[1] > 4:
+        det_scores = detections[:, 4][:, np.newaxis]
+    else:
+        det_scores = np.ones((detections.shape[0], 1), dtype=float)
+
+    tracker_score_index = int(
+        np.clip(tracker_score_index, a_min=0, a_max=trackers.shape[1] - 1)
+    )
+    tracker_scores = trackers[:, tracker_score_index][np.newaxis, :]
+    return np.abs(det_scores - tracker_scores)
+
+
+def gate_mask_from_threshold(gate_matrix, threshold):
+    gate_matrix = np.asarray(gate_matrix, dtype=float)
+    if gate_matrix.size == 0:
+        return np.zeros(gate_matrix.shape, dtype=bool)
+    return gate_matrix > float(threshold)
+
+
+def associate_by_score_and_gate(score_matrix, gate_mask):
+    score_matrix = np.asarray(score_matrix, dtype=float)
+    gate_mask = np.asarray(gate_mask, dtype=bool)
+    if score_matrix.shape != gate_mask.shape:
+        raise ValueError("score_matrix and gate_mask must have identical shapes.")
+
+    num_dets, num_trks = score_matrix.shape
+    if num_trks == 0:
+        return (
+            np.empty((0, 2), dtype=int),
+            np.arange(num_dets),
+            np.empty((0, 5), dtype=int),
+        )
+
+    if min(score_matrix.shape) > 0 and gate_mask.any():
+        if gate_mask.sum(1).max() == 1 and gate_mask.sum(0).max() == 1:
+            matched_indices = np.stack(np.where(gate_mask), axis=1)
+        else:
+            masked_cost = -score_matrix.copy()
+            masked_cost[~gate_mask] = 1e6
+            matched_indices = linear_assignment(masked_cost)
+    else:
+        matched_indices = np.empty(shape=(0, 2), dtype=int)
+
+    unmatched_detections = []
+    for d in range(num_dets):
+        if d not in matched_indices[:, 0]:
+            unmatched_detections.append(d)
+    unmatched_trackers = []
+    for t in range(num_trks):
+        if t not in matched_indices[:, 1]:
+            unmatched_trackers.append(t)
+
+    matches = []
+    for m in matched_indices:
+        if not gate_mask[m[0], m[1]]:
+            unmatched_detections.append(m[0])
+            unmatched_trackers.append(m[1])
+        else:
+            matches.append(m.reshape(1, 2))
+    if len(matches) == 0:
+        matches = np.empty((0, 2), dtype=int)
+    else:
+        matches = np.concatenate(matches, axis=0)
+
+    return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
+
+
+def spherical_gate_and_score_matrices(
+    detections,
+    trackers,
+    association_geometry_cfg,
+    *,
+    score_diff_weight=0.0,
+    tracker_score_index=4,
+):
+    overlap_matrix = spherical_iou_xyxy_matrix(
+        detections[:, :4],
+        trackers[:, :4],
+        image_width=association_geometry_cfg["image_width"],
+        image_height=association_geometry_cfg["image_height"],
+    )
+    center_similarity = center_similarity_xyxy_matrix(
+        detections[:, :4],
+        trackers[:, :4],
+        image_width=association_geometry_cfg["image_width"],
+        image_height=association_geometry_cfg["image_height"],
+    )
+    score_matrix = overlap_matrix + (
+        center_similarity * float(association_geometry_cfg["center_distance_weight"])
+    )
+    if score_diff_weight != 0.0:
+        score_matrix -= score_difference_matrix(
+            detections,
+            trackers,
+            tracker_score_index=tracker_score_index,
+        ) * float(score_diff_weight)
+    return overlap_matrix, score_matrix
+
+
+def legacy_first_stage_gate_and_score(
+    detections,
+    trackers,
+    lt,
+    rt,
+    lb,
+    rb,
+    previous_obs,
+    vdc_weight,
+    iou_type=None,
+    args=None,
+):
+    Y1, X1 = speed_direction_batch_lt(detections, previous_obs)
+    Y2, X2 = speed_direction_batch_rt(detections, previous_obs)
+    Y3, X3 = speed_direction_batch_lb(detections, previous_obs)
+    Y4, X4 = speed_direction_batch_rb(detections, previous_obs)
+    cost_lt = cost_vel(Y1, X1, trackers, lt, detections, previous_obs, vdc_weight)
+    cost_rt = cost_vel(Y2, X2, trackers, rt, detections, previous_obs, vdc_weight)
+    cost_lb = cost_vel(Y3, X3, trackers, lb, detections, previous_obs, vdc_weight)
+    cost_rb = cost_vel(Y4, X4, trackers, rb, detections, previous_obs, vdc_weight)
+    iou_matrix = np.asarray(iou_type(detections, trackers), dtype=float)
+    score_matrix = iou_matrix + cost_lt + cost_rt + cost_lb + cost_rb
+    if args is not None and getattr(args, "TCM_first_step", False):
+        score_matrix -= (
+            cal_score_dif_batch(detections, trackers)
+            * float(args.TCM_first_step_weight)
+        )
+    return iou_matrix, score_matrix
+
+
+def legacy_byte_gate_and_score(detections, trackers, iou_type=None, args=None):
+    iou_matrix = np.asarray(iou_type(detections, trackers), dtype=float)
+    score_matrix = iou_matrix.copy()
+    if args is not None and getattr(args, "TCM_byte_step", False):
+        score_matrix -= (
+            cal_score_dif_batch_two_score(detections, trackers)
+            * float(args.TCM_byte_step_weight)
+        )
+    return iou_matrix, score_matrix
+
+
+def legacy_rematch_gate_and_score(detections, trackers, iou_type=None):
+    iou_matrix = np.asarray(iou_type(detections, trackers), dtype=float)
+    return iou_matrix, iou_matrix.copy()
+
+
+def associate_selective_spherical(
+    detections,
+    trackers,
+    planar_gate_matrix,
+    planar_score_matrix,
+    planar_overlap_threshold,
+    spherical_overlap_threshold,
+    association_geometry_cfg,
+    *,
+    score_diff_weight=0.0,
+    tracker_score_index=4,
+):
+    spherical_gate_matrix, spherical_score_matrix = spherical_gate_and_score_matrices(
+        detections,
+        trackers,
+        association_geometry_cfg,
+        score_diff_weight=score_diff_weight,
+        tracker_score_index=tracker_score_index,
+    )
+    spherical_pair_mask = selective_spherical_pair_mask_xyxy(
+        detections[:, :4],
+        trackers[:, :4],
+        image_width=association_geometry_cfg["image_width"],
+        image_height=association_geometry_cfg["image_height"],
+        seam_band_px=association_geometry_cfg["seam_band_px"],
+        high_lat_deg=association_geometry_cfg["high_lat_deg"],
+    )
+    gate_mask = np.where(
+        spherical_pair_mask,
+        gate_mask_from_threshold(spherical_gate_matrix, spherical_overlap_threshold),
+        gate_mask_from_threshold(planar_gate_matrix, planar_overlap_threshold),
+    )
+    score_matrix = np.where(
+        spherical_pair_mask,
+        spherical_score_matrix,
+        planar_score_matrix,
+    )
+    return associate_by_score_and_gate(score_matrix, gate_mask)
+
+
+def associate_planar_gate_spherical_rerank(
+    detections,
+    trackers,
+    planar_gate_matrix,
+    planar_overlap_threshold,
+    association_geometry_cfg,
+    *,
+    score_diff_weight=0.0,
+    tracker_score_index=4,
+):
+    gate_mask = gate_mask_from_threshold(planar_gate_matrix, planar_overlap_threshold)
+    _, spherical_score_matrix = spherical_gate_and_score_matrices(
+        detections,
+        trackers,
+        association_geometry_cfg,
+        score_diff_weight=score_diff_weight,
+        tracker_score_index=tracker_score_index,
+    )
+    return associate_by_score_and_gate(spherical_score_matrix, gate_mask)
+
+
+def associate_spherical(
+    detections,
+    trackers,
+    overlap_threshold,
+    association_geometry_cfg,
+    *,
+    score_diff_weight=0.0,
+    tracker_score_index=4,
+):
+    if len(trackers) == 0:
+        return (
+            np.empty((0, 2), dtype=int),
+            np.arange(len(detections)),
+            np.empty((0, 5), dtype=int),
+        )
+
+    overlap_matrix, score_matrix = spherical_gate_and_score_matrices(
+        detections,
+        trackers,
+        association_geometry_cfg,
+        score_diff_weight=score_diff_weight,
+        tracker_score_index=tracker_score_index,
+    )
+    gate_mask = gate_mask_from_threshold(overlap_matrix, overlap_threshold)
+    return associate_by_score_and_gate(score_matrix, gate_mask)
 
 
 def speed_direction_batch(dets, tracks):

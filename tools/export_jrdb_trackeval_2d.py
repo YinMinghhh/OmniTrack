@@ -166,14 +166,13 @@ def convert_gt(seq_to_frames, gt_labels_dir, gt_out_dir):
 
 
 def convert_pred(seq_to_frames, pred_json, trackers_out_dir, tracker_name):
-    tracker_dir = trackers_out_dir / tracker_name / "data"
     raw = read_json(pred_json)
-    pred_results = raw["results"]
+    tracker_dir = trackers_out_dir / tracker_name / "data"
     seq_lines = defaultdict(list)
     seq_frames = {seq: set(frames) for seq, frames in seq_to_frames.items()}
     skip_invalid_id = 0
 
-    for sample_token, annos in sorted(pred_results.items()):
+    for sample_token, annos in sorted(raw["results"].items()):
         seq_name, frame_name = sample_token.rsplit("_", 1)
         if seq_name not in seq_frames:
             continue
@@ -207,7 +206,6 @@ def convert_pred(seq_to_frames, pred_json, trackers_out_dir, tracker_name):
 
     return summary, skip_invalid_id, tracker_dir
 
-
 def main():
     args = parse_args()
 
@@ -238,13 +236,16 @@ def main():
 
     if not args.skip_pred:
         if pred_json is None:
-            raise ValueError("--pred-json is required unless --skip-pred is set.")
+            raise ValueError(
+                "--pred-json is required unless --skip-pred is set."
+            )
         pred_summary, skip_invalid_id, tracker_dir = convert_pred(
             seq_to_frames=seq_to_frames,
             pred_json=pred_json,
             trackers_out_dir=trackers_out_dir,
             tracker_name=args.tracker_name,
         )
+        output_summary["pred_json"] = str(pred_json)
         output_summary["trackers_out_dir"] = str(trackers_out_dir)
         output_summary["tracker_name"] = args.tracker_name
         output_summary["tracker_data_dir"] = str(tracker_dir)

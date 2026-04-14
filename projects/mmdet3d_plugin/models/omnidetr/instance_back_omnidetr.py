@@ -15,6 +15,9 @@ from ..track.matching import iou_distance, iou_score
 from .query_handler_module import QueryHandler
 from .track_handler_module import TrackHandler
 from .seam_duplicate_resolver import normalize_seam_resolver_cfg
+from ..trackers.hybrid_sort_tracker.association_geometry import (
+    normalize_tbd_tracker_cfg,
+)
 
 __all__ = ["InstanceBackOMNIDETR"]
 
@@ -100,7 +103,7 @@ class InstanceBackOMNIDETR(nn.Module):
         self.init_thresh = init_thresh
         self.e2e_handler_cfg = dict(e2e_handler_cfg or {})
         self.tbd_handler_cfg = dict(tbd_handler_cfg or {})
-        self.tbd_tracker_cfg = dict(tbd_tracker_cfg or {})
+        self.tbd_tracker_cfg = normalize_tbd_tracker_cfg(tbd_tracker_cfg)
         self.seam_resolver_cfg = normalize_seam_resolver_cfg(seam_resolver_cfg)
         self.seam_resolver_last_stats = {}
 

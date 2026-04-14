@@ -5,6 +5,7 @@ from __future__ import print_function
 
 import numpy as np
 from .association import *
+from .association_geometry import normalize_association_geometry_cfg
 
 
 def k_previous_obs(observations, cur_age, k):
@@ -283,7 +284,8 @@ ASSO_FUNCS = {  "iou": iou_batch,
 
 class Hybrid_Sort(object):
     def __init__(self, args, det_thresh, max_age=30, min_hits=3,
-        iou_threshold=0.3, delta_t=3, asso_func="iou", inertia=0.2, use_byte=False):
+        iou_threshold=0.3, delta_t=3, asso_func="iou", inertia=0.2, use_byte=False,
+        association_geometry_cfg=None):
         """
         Sets key parameters for SORT
         """
@@ -298,7 +300,44 @@ class Hybrid_Sort(object):
         self.inertia = inertia
         self.use_byte = use_byte
         self.args = args
+        self.association_geometry_cfg = normalize_association_geometry_cfg(
+            association_geometry_cfg
+        )
+        self.runtime_association_geometry = {}
         KalmanBoxTracker.count = 0
+
+    def set_runtime_geometry(
+        self,
+        image_width=None,
+        image_height=None,
+        seam_band_px=None,
+    ):
+        runtime_cfg = {}
+        if image_width is not None:
+            runtime_cfg["image_width"] = float(image_width)
+        if image_height is not None:
+            runtime_cfg["image_height"] = float(image_height)
+        if seam_band_px is not None:
+            runtime_cfg["seam_band_px"] = float(seam_band_px)
+        self.runtime_association_geometry = runtime_cfg
+
+    def _current_association_geometry_cfg(self):
+        cfg = dict(self.association_geometry_cfg)
+        cfg.update(self.runtime_association_geometry)
+        return normalize_association_geometry_cfg(cfg)
+
+    def _uses_spherical_association(self):
+        return self._current_association_geometry_cfg()["mode"] in {
+            "bfov_lite_spherical",
+            "selective_spherical",
+            "planar_gate_spherical_rerank",
+        }
+
+    def _association_gate_threshold(self, association_geometry_cfg):
+        gate_threshold = association_geometry_cfg.get("gate_threshold")
+        if gate_threshold is None:
+            return float(self.iou_threshold)
+        return float(gate_threshold)
 
     def update(self, output_results):
         """
@@ -357,11 +396,92 @@ class Hybrid_Sort(object):
         last_boxes = np.array([trk.last_observation for trk in self.trackers])
         k_observations = np.array(
             [k_previous_obs(trk.observations, trk.age, self.delta_t) for trk in self.trackers])
+        association_geometry_cfg = self._current_association_geometry_cfg()
+        association_mode = association_geometry_cfg["mode"]
+        spherical_mode = association_mode == "bfov_lite_spherical"
+        selective_spherical_mode = association_mode == "selective_spherical"
+        planar_gate_spherical_rerank_mode = (
+            association_mode == "planar_gate_spherical_rerank"
+        )
+        gate_threshold = self._association_gate_threshold(association_geometry_cfg)
 
         """
             First round of association
         """
-        if self.args.TCM_first_step:
+        if len(trks) == 0:
+            matched = np.empty((0, 2), dtype=int)
+            unmatched_dets = np.arange(len(dets))
+            unmatched_trks = np.empty((0,), dtype=int)
+        elif spherical_mode:
+            matched, unmatched_dets, unmatched_trks = associate_spherical(
+                dets,
+                trks,
+                gate_threshold,
+                association_geometry_cfg,
+                score_diff_weight=(
+                    self.args.TCM_first_step_weight
+                    if self.args.TCM_first_step
+                    else 0.0
+                ),
+                tracker_score_index=4,
+            )
+        elif selective_spherical_mode:
+            planar_gate_matrix, planar_score_matrix = legacy_first_stage_gate_and_score(
+                dets,
+                trks,
+                velocities_lt,
+                velocities_rt,
+                velocities_lb,
+                velocities_rb,
+                k_observations,
+                self.inertia,
+                self.asso_func,
+                self.args,
+            )
+            matched, unmatched_dets, unmatched_trks = associate_selective_spherical(
+                dets,
+                trks,
+                planar_gate_matrix,
+                planar_score_matrix,
+                self.iou_threshold,
+                gate_threshold,
+                association_geometry_cfg,
+                score_diff_weight=(
+                    self.args.TCM_first_step_weight
+                    if self.args.TCM_first_step
+                    else 0.0
+                ),
+                tracker_score_index=4,
+            )
+        elif planar_gate_spherical_rerank_mode:
+            planar_gate_matrix, _ = legacy_first_stage_gate_and_score(
+                dets,
+                trks,
+                velocities_lt,
+                velocities_rt,
+                velocities_lb,
+                velocities_rb,
+                k_observations,
+                self.inertia,
+                self.asso_func,
+                self.args,
+            )
+            matched, unmatched_dets, unmatched_trks = (
+                associate_planar_gate_spherical_rerank(
+                    dets,
+                    trks,
+                    planar_gate_matrix,
+                    self.iou_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_first_step_weight
+                        if self.args.TCM_first_step
+                        else 0.0
+                    ),
+                    tracker_score_index=4,
+                )
+            )
+        elif self.args.TCM_first_step:
             matched, unmatched_dets, unmatched_trks = associate_4_points_with_score(
                 dets, trks, self.iou_threshold, velocities_lt, velocities_rt, velocities_lb, velocities_rb,
                 k_observations, self.inertia, self.asso_func, self.args)
@@ -378,50 +498,223 @@ class Hybrid_Sort(object):
         # BYTE association
         if self.use_byte and len(dets_second) > 0 and unmatched_trks.shape[0] > 0:
             u_trks = trks[unmatched_trks]
-            iou_left = self.asso_func(dets_second, u_trks)
-            iou_left = np.array(iou_left)
-            if iou_left.max() > self.iou_threshold:
-                """
-                    NOTE: by using a lower threshold, e.g., self.iou_threshold - 0.1, you may
-                    get a higher performance especially on MOT17/MOT20 datasets. But we keep it
-                    uniform here for simplicity
-                """
-                if self.args.TCM_byte_step:
-                    iou_left -= np.array(cal_score_dif_batch_two_score(dets_second, u_trks) * self.args.TCM_byte_step_weight)
-                matched_indices = linear_assignment(-iou_left)
+            if spherical_mode:
+                matched_indices, _, _ = associate_spherical(
+                    dets_second,
+                    u_trks,
+                    gate_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_byte_step_weight
+                        if self.args.TCM_byte_step
+                        else 0.0
+                    ),
+                    tracker_score_index=5,
+                )
                 to_remove_trk_indices = []
                 for m in matched_indices:
                     det_ind, trk_ind = m[0], unmatched_trks[m[1]]
-                    if iou_left[m[0], m[1]] < self.iou_threshold:
-                        continue
                     self.trackers[trk_ind].update(dets_second[det_ind, :])
                     to_remove_trk_indices.append(trk_ind)
-                unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            elif selective_spherical_mode:
+                planar_gate_matrix, planar_score_matrix = legacy_byte_gate_and_score(
+                    dets_second,
+                    u_trks,
+                    self.asso_func,
+                    self.args,
+                )
+                matched_indices, _, _ = associate_selective_spherical(
+                    dets_second,
+                    u_trks,
+                    planar_gate_matrix,
+                    planar_score_matrix,
+                    self.iou_threshold,
+                    gate_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_byte_step_weight
+                        if self.args.TCM_byte_step
+                        else 0.0
+                    ),
+                    tracker_score_index=5,
+                )
+                to_remove_trk_indices = []
+                for m in matched_indices:
+                    det_ind, trk_ind = m[0], unmatched_trks[m[1]]
+                    self.trackers[trk_ind].update(dets_second[det_ind, :])
+                    to_remove_trk_indices.append(trk_ind)
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            elif planar_gate_spherical_rerank_mode:
+                planar_gate_matrix, _ = legacy_byte_gate_and_score(
+                    dets_second,
+                    u_trks,
+                    self.asso_func,
+                    self.args,
+                )
+                matched_indices, _, _ = associate_planar_gate_spherical_rerank(
+                    dets_second,
+                    u_trks,
+                    planar_gate_matrix,
+                    self.iou_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_byte_step_weight
+                        if self.args.TCM_byte_step
+                        else 0.0
+                    ),
+                    tracker_score_index=5,
+                )
+                to_remove_trk_indices = []
+                for m in matched_indices:
+                    det_ind, trk_ind = m[0], unmatched_trks[m[1]]
+                    self.trackers[trk_ind].update(dets_second[det_ind, :])
+                    to_remove_trk_indices.append(trk_ind)
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            else:
+                iou_left = self.asso_func(dets_second, u_trks)
+                iou_left = np.array(iou_left)
+                if iou_left.max() > self.iou_threshold:
+                    """
+                        NOTE: by using a lower threshold, e.g., self.iou_threshold - 0.1, you may
+                        get a higher performance especially on MOT17/MOT20 datasets. But we keep it
+                        uniform here for simplicity
+                    """
+                    if self.args.TCM_byte_step:
+                        iou_left -= np.array(cal_score_dif_batch_two_score(dets_second, u_trks) * self.args.TCM_byte_step_weight)
+                    matched_indices = linear_assignment(-iou_left)
+                    to_remove_trk_indices = []
+                    for m in matched_indices:
+                        det_ind, trk_ind = m[0], unmatched_trks[m[1]]
+                        if iou_left[m[0], m[1]] < self.iou_threshold:
+                            continue
+                        self.trackers[trk_ind].update(dets_second[det_ind, :])
+                        to_remove_trk_indices.append(trk_ind)
+                    unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
 
         if unmatched_dets.shape[0] > 0 and unmatched_trks.shape[0] > 0:
             left_dets = dets[unmatched_dets]
             left_trks = last_boxes[unmatched_trks]
-            iou_left = self.asso_func(left_dets, left_trks)
-            iou_left = np.array(iou_left)
-
-            if iou_left.max() > self.iou_threshold:
-                """
-                    NOTE: by using a lower threshold, e.g., self.iou_threshold - 0.1, you may
-                    get a higher performance especially on MOT17/MOT20 datasets. But we keep it
-                    uniform here for simplicity
-                """
-                rematched_indices = linear_assignment(-iou_left)
+            if spherical_mode:
+                rematched_indices, _, _ = associate_spherical(
+                    left_dets,
+                    left_trks,
+                    gate_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_first_step_weight
+                        if self.args.TCM_first_step
+                        else 0.0
+                    ),
+                    tracker_score_index=4,
+                )
                 to_remove_det_indices = []
                 to_remove_trk_indices = []
                 for m in rematched_indices:
                     det_ind, trk_ind = unmatched_dets[m[0]], unmatched_trks[m[1]]
-                    if iou_left[m[0], m[1]] < self.iou_threshold:
-                        continue
                     self.trackers[trk_ind].update(dets[det_ind, :])
                     to_remove_det_indices.append(det_ind)
                     to_remove_trk_indices.append(trk_ind)
-                unmatched_dets = np.setdiff1d(unmatched_dets, np.array(to_remove_det_indices))
-                unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
+                unmatched_dets = np.setdiff1d(
+                    unmatched_dets, np.array(to_remove_det_indices)
+                )
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            elif selective_spherical_mode:
+                planar_gate_matrix, planar_score_matrix = legacy_rematch_gate_and_score(
+                    left_dets,
+                    left_trks,
+                    self.asso_func,
+                )
+                rematched_indices, _, _ = associate_selective_spherical(
+                    left_dets,
+                    left_trks,
+                    planar_gate_matrix,
+                    planar_score_matrix,
+                    self.iou_threshold,
+                    gate_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_first_step_weight
+                        if self.args.TCM_first_step
+                        else 0.0
+                    ),
+                    tracker_score_index=4,
+                )
+                to_remove_det_indices = []
+                to_remove_trk_indices = []
+                for m in rematched_indices:
+                    det_ind, trk_ind = unmatched_dets[m[0]], unmatched_trks[m[1]]
+                    self.trackers[trk_ind].update(dets[det_ind, :])
+                    to_remove_det_indices.append(det_ind)
+                    to_remove_trk_indices.append(trk_ind)
+                unmatched_dets = np.setdiff1d(
+                    unmatched_dets, np.array(to_remove_det_indices)
+                )
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            elif planar_gate_spherical_rerank_mode:
+                planar_gate_matrix, _ = legacy_rematch_gate_and_score(
+                    left_dets,
+                    left_trks,
+                    self.asso_func,
+                )
+                rematched_indices, _, _ = associate_planar_gate_spherical_rerank(
+                    left_dets,
+                    left_trks,
+                    planar_gate_matrix,
+                    self.iou_threshold,
+                    association_geometry_cfg,
+                    score_diff_weight=(
+                        self.args.TCM_first_step_weight
+                        if self.args.TCM_first_step
+                        else 0.0
+                    ),
+                    tracker_score_index=4,
+                )
+                to_remove_det_indices = []
+                to_remove_trk_indices = []
+                for m in rematched_indices:
+                    det_ind, trk_ind = unmatched_dets[m[0]], unmatched_trks[m[1]]
+                    self.trackers[trk_ind].update(dets[det_ind, :])
+                    to_remove_det_indices.append(det_ind)
+                    to_remove_trk_indices.append(trk_ind)
+                unmatched_dets = np.setdiff1d(
+                    unmatched_dets, np.array(to_remove_det_indices)
+                )
+                unmatched_trks = np.setdiff1d(
+                    unmatched_trks, np.array(to_remove_trk_indices)
+                )
+            else:
+                iou_left = self.asso_func(left_dets, left_trks)
+                iou_left = np.array(iou_left)
+
+                if iou_left.max() > self.iou_threshold:
+                    """
+                        NOTE: by using a lower threshold, e.g., self.iou_threshold - 0.1, you may
+                        get a higher performance especially on MOT17/MOT20 datasets. But we keep it
+                        uniform here for simplicity
+                    """
+                    rematched_indices = linear_assignment(-iou_left)
+                    to_remove_det_indices = []
+                    to_remove_trk_indices = []
+                    for m in rematched_indices:
+                        det_ind, trk_ind = unmatched_dets[m[0]], unmatched_trks[m[1]]
+                        if iou_left[m[0], m[1]] < self.iou_threshold:
+                            continue
+                        self.trackers[trk_ind].update(dets[det_ind, :])
+                        to_remove_det_indices.append(det_ind)
+                        to_remove_trk_indices.append(trk_ind)
+                    unmatched_dets = np.setdiff1d(unmatched_dets, np.array(to_remove_det_indices))
+                    unmatched_trks = np.setdiff1d(unmatched_trks, np.array(to_remove_trk_indices))
 
         for m in unmatched_trks:
             self.trackers[m].update(None)
@@ -554,5 +847,3 @@ class Hybrid_Sort(object):
         if(len(ret)>0):
             return np.concatenate(ret)
         return np.empty((0, 7))
-
-

@@ -12,6 +12,7 @@ from ..track.kalman_filter import KalmanFilter
 from ..track.matching import iou_distance, iou_score
 from ..trackers.ocsort_tracker.ocsort import OCSort
 from ..trackers.hybrid_sort_tracker.hybrid_sort import Hybrid_Sort
+from ..trackers.hybrid_sort_tracker.tracker_builder import build_hybrid_sort_args
 from ..trackers.sort_tracker.sort import Sort
 from ..trackers.byte_tracker.byte_tracker import BYTETracker
 from ..trackers.args import make_parser
@@ -29,21 +30,8 @@ class TrackState(object):
 class TrackHandler:
     def __init__(self, instance_bank):
         self.instance_bank = instance_bank
-        self.instance_bank.nms_thresh = 0.05
-        self.instance_bank.track_thresh = 0.45
-        self.instance_bank.det_thresh = 0.10
-        self.instance_bank.init_thresh = 0.55
-
-        # self.tracker = OCSort(det_thresh=0.6, iou_threshold=0.15, use_byte=True)
-        args = make_parser().parse_args([])
-        self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                    iou_threshold=args.iou_thresh,
-                                    asso_func=args.asso,
-                                    delta_t=args.deltat,
-                                    inertia=args.inertia,
-                                    use_byte=args.use_byte)
-        # args.track_thresh = 0.2
-        # self.tracker = Sort(args, det_thresh=args.track_thresh)
+        self._apply_handler_cfg()
+        self._reset_tracker()
         self.save_data = {}
 
     def __getattr__(self, name):
@@ -59,6 +47,40 @@ class TrackHandler:
             setattr(self.instance_bank, name, value)
         else:
             super().__setattr__(name, value)
+
+    def _apply_handler_cfg(self):
+        handler_cfg = {
+            "nms_thresh": 0.05,
+            "track_thresh": 0.45,
+            "det_thresh": 0.10,
+            "init_thresh": 0.55,
+        }
+        handler_cfg.update(dict(getattr(self.instance_bank, "tbd_handler_cfg", {}) or {}))
+        for attr_name, value in handler_cfg.items():
+            setattr(self.instance_bank, attr_name, float(value))
+
+    def _build_tracker(self):
+        args, hybrid_sort_kwargs = build_hybrid_sort_args(
+            make_parser().parse_args([]),
+            getattr(self.instance_bank, "tbd_tracker_cfg", {}),
+        )
+        return Hybrid_Sort(
+            args,
+            det_thresh=hybrid_sort_kwargs["det_thresh"],
+            iou_threshold=args.iou_thresh,
+            asso_func=args.asso,
+            delta_t=args.deltat,
+            inertia=args.inertia,
+            use_byte=args.use_byte,
+            max_age=hybrid_sort_kwargs["max_age"],
+            min_hits=hybrid_sort_kwargs["min_hits"],
+            association_geometry_cfg=hybrid_sort_kwargs["association_geometry_cfg"],
+        )
+
+    def _reset_tracker(self):
+        # Route every tracker construction through the same builder so ablations
+        # only differ by config, not by hidden parser defaults.
+        self.tracker = self._build_tracker()
 
     def _get_active_track_boxes(self, device, dtype):
         if not hasattr(self.tracker, "trackers"):
@@ -155,20 +177,19 @@ class TrackHandler:
 
         count = 0
         if self.timestamp is None or abs(self.timestamp - meta['timestamp']) >100:
-            args = make_parser().parse_args([])
-            self.tracker = Hybrid_Sort(args, det_thresh=args.track_thresh,
-                                            iou_threshold=args.iou_thresh,
-                                            asso_func=args.asso,
-                                            delta_t=args.deltat,
-                                            inertia=args.inertia,
-                                            use_byte=args.use_byte)
-            # args.track_thresh = 0.2
-            # self.tracker = Sort(args, det_thresh=args.track_thresh)
+            self._reset_tracker()
             self.frame_id = 0
             # with open("/root/autodl-tmp/sparse4D_track/huang-2-2019-01-25_0.pkl", 'wb') as f:
             #     pickle.dump(self.save_data, f)
             # print("save!!!")
 
+        if hasattr(self.tracker, "set_runtime_geometry"):
+            seam_cfg = getattr(self.instance_bank, "seam_resolver_cfg", {})
+            self.tracker.set_runtime_geometry(
+                image_width=float(self.ori_shape[0]),
+                image_height=float(self.ori_shape[1]),
+                seam_band_px=seam_cfg.get("seam_band_px"),
+            )
 
         results, tracklets = self.tracker.update(dets.cpu().numpy())
 
