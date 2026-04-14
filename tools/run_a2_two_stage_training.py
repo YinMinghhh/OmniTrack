@@ -36,9 +36,13 @@ A_CONFIG = REPO_ROOT / "projects/configs/JRDB_OmniTrack_wt_a_circular_padding_ro
 BASELINE_CHECKPOINT = REPO_ROOT / "ckpt/jrdb2019_baseline_iter_135900.pth"
 WHITELIST_TRAIN = A1_ROOT / "train_whitelist.txt"
 WHITELIST_VAL = A1_ROOT / "val_whitelist.txt"
+DEFAULT_CONDA_ENV = os.environ.get(
+    "OMNITRACK_CONDA_ENV",
+    "/mnt/sdb/ym/envs/OmniTrack-clean",
+)
 DEFAULT_CONDA_PREFIX = (
     "source /home/SNN/anaconda3/etc/profile.d/conda.sh && "
-    "conda activate /mnt/sdb/ym/envs/OmniTrack"
+    f"conda activate {shlex.quote(DEFAULT_CONDA_ENV)}"
 )
 
 VALID_STAGES = ("s1", "s2")
@@ -748,7 +752,12 @@ def launch_tmux(spec: RunSpec, selected_gpu: str, force: bool) -> None:
     ]
     if spec.is_preflight:
         cmd_parts.extend(["--override-max-iters", str(spec.effective_iters)])
-    cmd = " ".join(quote(part) for part in cmd_parts)
+    python_cmd = " ".join(quote(part) for part in cmd_parts)
+    cmd = (
+        f"{DEFAULT_CONDA_PREFIX} && "
+        f"cd {quote(REPO_ROOT)} && "
+        f"{python_cmd}"
+    )
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", spec.tmux_session, f"bash -lc {quote(cmd)}"],
         check=True,

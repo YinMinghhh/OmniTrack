@@ -12,7 +12,7 @@
 - The real shared files live under `/mnt/sdb/ym/OmniTrack/_shared_assets/{data,ckpt,work_dirs}`.
 - Default environment:
   - `source /home/SNN/anaconda3/etc/profile.d/conda.sh`
-  - `conda activate /mnt/sdb/ym/envs/OmniTrack`
+  - `conda activate /mnt/sdb/ym/envs/OmniTrack-clean`
 - Clean reproduction is validated in `/mnt/sdb/ym/envs/OmniTrack-clean` rather than the older `/mnt/sdb/ym/envs/OmniTrack`.
 - Target stack from repo docs: Python 3.10, PyTorch 2.1.1, CUDA 11.8.
 - The user states the server has sufficient hardware. If the assistant-side shell reports `torch.cuda.is_available()==False`, do not immediately conclude the machine has no GPU; that can be a sandbox visibility issue.
