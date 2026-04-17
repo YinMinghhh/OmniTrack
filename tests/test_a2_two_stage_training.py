@@ -1,18 +1,38 @@
 import importlib.util
+import os
 import pathlib
 import sys
 import tempfile
 import unittest
 
 import torch
+from mmcv import Config
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "tools/run_a2_two_stage_training.py"
-SPEC = importlib.util.spec_from_file_location("a2_two_stage_training", MODULE_PATH)
-A2 = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = A2
-SPEC.loader.exec_module(A2)
+
+
+def load_runner_module(module_name: str, env_overrides: dict[str, str] | None = None):
+    env_overrides = env_overrides or {}
+    saved = {key: os.environ.get(key) for key in env_overrides}
+    try:
+        for key, value in env_overrides.items():
+            os.environ[key] = value
+        spec = importlib.util.spec_from_file_location(module_name, MODULE_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+A2 = load_runner_module("a2_two_stage_training")
 
 
 def make_eval_metrics(full_idsw, full_frag, seam_fp, seam_hota, seam_idf1, non_hota, non_idf1, non_fp, non_idsw, non_frag):
@@ -69,6 +89,21 @@ class RunSpecTest(unittest.TestCase):
         )
         self.assertTrue(spec.is_preflight)
         self.assertEqual(spec.run_slug, "a2_s1_b15000_i100_seed0_a")
+
+    def test_env_overrides_can_redirect_state_root_and_a_config(self):
+        custom_root = pathlib.Path("/tmp/custom_rolllite_root")
+        custom_config = pathlib.Path("/tmp/custom_rolllite.py")
+        module = load_runner_module(
+            "a2_two_stage_training_env_override",
+            env_overrides={
+                "OMNITRACK_A2_ROOT": str(custom_root),
+                "OMNITRACK_A2_A_CONFIG": str(custom_config),
+                "OMNITRACK_A2_SUMMARY_TITLE": "A2 Roll-Lite Clean Stage Gate Summary",
+            },
+        )
+        self.assertEqual(module.A2_ROOT, custom_root)
+        self.assertEqual(module.A_CONFIG, custom_config)
+        self.assertEqual(module.SUMMARY_TITLE, "A2 Roll-Lite Clean Stage Gate Summary")
 
 
 class CommandAndConfigTest(unittest.TestCase):
@@ -327,6 +362,24 @@ class BNFreezeCheckTest(unittest.TestCase):
             report = A2.compare_backbone_bn(ref_path, tgt_path)
             self.assertFalse(report["pass"])
             self.assertEqual(report["changed_key_count"], 1)
+
+
+class ConfigIsolationTest(unittest.TestCase):
+    def test_rolllite_config_only_reduces_roll_prob(self):
+        official_cfg = Config.fromfile(
+            str(REPO_ROOT / "projects/configs/JRDB_OmniTrack_wt_a_circular_padding_rollaug.py")
+        )
+        rolllite_cfg = Config.fromfile(
+            str(REPO_ROOT / "projects/configs/JRDB_OmniTrack_wt_a_circular_padding_rollaug_rolllite.py")
+        )
+
+        self.assertEqual(official_cfg.data.train.data_aug_conf["roll_prob"], 1.0)
+        self.assertEqual(rolllite_cfg.data.train.data_aug_conf["roll_prob"], 0.25)
+
+        official_dict = official_cfg._cfg_dict.to_dict()
+        rolllite_dict = rolllite_cfg._cfg_dict.to_dict()
+        rolllite_dict["data"]["train"]["data_aug_conf"]["roll_prob"] = 1.0
+        self.assertEqual(rolllite_dict, official_dict)
 
 
 if __name__ == "__main__":

@@ -21,8 +21,23 @@ import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-A1_ROOT = REPO_ROOT / "research/seam-a/A1_proxy_subset_screening"
-A2_ROOT = REPO_ROOT / "research/seam-a/A2_two_stage_training"
+
+
+def path_from_env(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    if not value:
+        return default
+    return Path(value)
+
+
+A1_ROOT = path_from_env(
+    "OMNITRACK_A1_ROOT",
+    REPO_ROOT / "research/seam-a/A1_proxy_subset_screening",
+)
+A2_ROOT = path_from_env(
+    "OMNITRACK_A2_ROOT",
+    REPO_ROOT / "research/seam-a/A2_two_stage_training",
+)
 MANIFEST_PATH = A2_ROOT / "manifest.json"
 MATRIX_PATH = A2_ROOT / "experiment_matrix.csv"
 SUMMARY_PATH = A2_ROOT / "stage_gate_summary.md"
@@ -31,11 +46,26 @@ COMMAND_ROOT = A2_ROOT / "commands"
 CONFIG_ROOT = A2_ROOT / "generated_configs"
 RUN_META_ROOT = A2_ROOT / "run_meta"
 
-BASELINE_CONFIG = REPO_ROOT / "projects/configs/JRDB_OmniTrack.py"
-A_CONFIG = REPO_ROOT / "projects/configs/JRDB_OmniTrack_wt_a_circular_padding_rollaug.py"
+BASELINE_CONFIG = path_from_env(
+    "OMNITRACK_A2_BASELINE_CONFIG",
+    REPO_ROOT / "projects/configs/JRDB_OmniTrack.py",
+)
+A_CONFIG = path_from_env(
+    "OMNITRACK_A2_A_CONFIG",
+    REPO_ROOT / "projects/configs/JRDB_OmniTrack_wt_a_circular_padding_rollaug.py",
+)
 BASELINE_CHECKPOINT = REPO_ROOT / "ckpt/jrdb2019_baseline_iter_135900.pth"
 WHITELIST_TRAIN = A1_ROOT / "train_whitelist.txt"
 WHITELIST_VAL = A1_ROOT / "val_whitelist.txt"
+SUMMARY_TITLE = os.environ.get("OMNITRACK_A2_SUMMARY_TITLE", "A2 Stage Gate Summary")
+FORWARDED_ENV_KEYS = (
+    "OMNITRACK_A1_ROOT",
+    "OMNITRACK_A2_ROOT",
+    "OMNITRACK_A2_BASELINE_CONFIG",
+    "OMNITRACK_A2_A_CONFIG",
+    "OMNITRACK_A2_SUMMARY_TITLE",
+    "OMNITRACK_CONDA_ENV",
+)
 DEFAULT_CONDA_ENV = os.environ.get(
     "OMNITRACK_CONDA_ENV",
     "/mnt/sdb/ym/envs/OmniTrack-clean",
@@ -344,6 +374,15 @@ def shell_with_logging(log_path: Path, commands: list[str]) -> str:
 
 def python_literal(value: Any) -> str:
     return repr(value)
+
+
+def forwarded_env_exports() -> str:
+    exports = []
+    for key in FORWARDED_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            exports.append(f"export {key}={quote(value)}")
+    return " && ".join(exports)
 
 
 def large_eval_interval(effective_iters: int) -> int:
@@ -753,11 +792,15 @@ def launch_tmux(spec: RunSpec, selected_gpu: str, force: bool) -> None:
     if spec.is_preflight:
         cmd_parts.extend(["--override-max-iters", str(spec.effective_iters)])
     python_cmd = " ".join(quote(part) for part in cmd_parts)
-    cmd = (
-        f"{DEFAULT_CONDA_PREFIX} && "
-        f"cd {quote(REPO_ROOT)} && "
-        f"{python_cmd}"
-    )
+    cmd_segments = [
+        DEFAULT_CONDA_PREFIX,
+        f"cd {quote(REPO_ROOT)}",
+    ]
+    env_exports = forwarded_env_exports()
+    if env_exports:
+        cmd_segments.append(env_exports)
+    cmd_segments.append(python_cmd)
+    cmd = " && ".join(cmd_segments)
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", spec.tmux_session, f"bash -lc {quote(cmd)}"],
         check=True,
@@ -1231,7 +1274,7 @@ def write_experiment_matrix(manifest: dict[str, Any]) -> None:
 
 def write_stage_summary(manifest: dict[str, Any]) -> None:
     lines = [
-        "# A2 Stage Gate Summary",
+        f"# {SUMMARY_TITLE}",
         "",
         f"Updated: {now_iso()}",
         "",
